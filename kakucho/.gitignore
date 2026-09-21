@@ -1,0 +1,8 @@
+out
+dist
+node_modules
+.vscode-test/
+*.vsix
+
+# bundle-python.js が生成する同梱 Python（pybp/ が正）
+python/

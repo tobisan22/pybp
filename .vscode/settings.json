@@ -1,0 +1,4 @@
+{
+  "// pybp": "このリポジトリは pybp 自体の開発用。同梱版が pip install -e を隠さないよう false にする",
+  "pybp.useBundledPython": false
+}

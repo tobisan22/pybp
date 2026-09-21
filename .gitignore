@@ -1,0 +1,8 @@
+# ルートリポジトリ用。pybp/ と kakucho/ にはそれぞれ専用の .gitignore があり、そちらも有効。
+
+# PyBP 拡張がワークスペースに書き出す実行時ファイル（.vscode/settings.json は追跡する）
+.vscode/py_*
+
+# Python
+__pycache__/
+*.pyc

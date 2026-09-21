@@ -1,0 +1,86 @@
+{
+  "name": "pybp",
+  "displayName": "PyBP - Persistent Python Session Runner",
+  "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
+  "version": "0.2.0",
+  "publisher": "local",
+  "repository": { "type": "git", "url": "https://example.invalid/pybp" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Debuggers", "Other"],
+  "activationEvents": ["onLanguage:python"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "pybp.run",      "title": "PyBP: Run with Breakpoints", "icon": "$(debug-start)" },
+      { "command": "pybp.continue", "title": "PyBP: Continue",             "icon": "$(debug-continue)" },
+      { "command": "pybp.stepOver", "title": "PyBP: Step Over",            "icon": "$(debug-step-over)" },
+      { "command": "pybp.stepInto", "title": "PyBP: Step Into",            "icon": "$(debug-step-into)" },
+      { "command": "pybp.stepOut",  "title": "PyBP: Step Out",             "icon": "$(debug-step-out)" },
+      { "command": "pybp.stop",     "title": "PyBP: Stop (quit debugger)", "icon": "$(debug-stop)" },
+      { "command": "pybp.restart",  "title": "PyBP: Restart Session",      "icon": "$(debug-restart)" },
+      { "command": "pybp.openFigures", "title": "PyBP: Open Figures", "icon": "$(graph)" },
+      { "command": "pybp.copyFigure", "title": "PyBP: Copy Figure Image", "icon": "$(copy)" }
+    ],
+    "keybindings": [
+      { "command": "pybp.run",      "key": "f5",             "when": "editorLangId == python && !pybp.stopped && !inDebugMode" },
+      { "command": "pybp.continue", "key": "f5",             "when": "pybp.stopped" },
+      { "command": "pybp.stepOver", "key": "f10",            "when": "pybp.stopped" },
+      { "command": "pybp.stepInto", "key": "f11",            "when": "pybp.stopped" },
+      { "command": "pybp.stepOut",  "key": "shift+f11",      "when": "pybp.stopped" },
+      { "command": "pybp.stop",     "key": "shift+f5",       "when": "pybp.stopped" },
+      { "command": "pybp.restart",  "key": "ctrl+shift+f5",  "when": "editorLangId == python" },
+      { "command": "pybp.copyFigure", "key": "ctrl+c",       "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive" }
+    ],
+    "menus": {
+      "editor/title/run": [
+        { "command": "pybp.run", "when": "editorLangId == python", "group": "navigation" }
+      ],
+      "editor/title": [
+        { "command": "pybp.continue", "when": "editorLangId == python && pybp.stopped", "group": "navigation@1" },
+        { "command": "pybp.stepOver", "when": "editorLangId == python && pybp.stopped", "group": "navigation@2" },
+        { "command": "pybp.stepInto", "when": "editorLangId == python && pybp.stopped", "group": "navigation@3" },
+        { "command": "pybp.stepOut",  "when": "editorLangId == python && pybp.stopped", "group": "navigation@4" },
+        { "command": "pybp.stop",     "when": "editorLangId == python && pybp.stopped", "group": "navigation@5" },
+        { "command": "pybp.restart",  "when": "editorLangId == python && !pybp.stopped", "group": "navigation@1" },
+        { "command": "pybp.openFigures", "when": "editorLangId == python", "group": "navigation@0" },
+        { "command": "pybp.copyFigure", "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive", "group": "navigation@0" }
+      ]
+    },
+    "configuration": {
+      "title": "PyBP",
+      "properties": {
+        "pybp.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "IPython セッションを起動する Python 実行ファイル"
+        },
+        "pybp.webaggPort": {
+        "type": "number",
+        "default": 8988,
+        "description": "matplotlib webagg バックエンドのポート（PYBP_PORT と一致させる）"
+        },
+        "pybp.useBundledPython": {
+          "type": "boolean",
+          "default": true,
+          "description": "拡張に同梱した pybp を PYTHONPATH 経由で使う（pip install 不要）。pybp/ を編集して開発する場合は false にする — true のままだと同梱版が pip install -e を隠してしまう"
+        },
+        "pybp.autoOpenFigures": {
+          "type": "boolean",
+          "default": true,
+          "description": "figure が作られたら Figure タブを自動で開く"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run bundle-python && npm run compile",
+    "bundle-python": "node ./scripts/bundle-python.js",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
