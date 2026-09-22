@@ -25,7 +25,7 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
    code --list-extensions
    ```
 
-   `local.pybp` が出れば OK です。
+   `bisan.pybp` が出れば OK です。
 
 ### 必要なもの
 
