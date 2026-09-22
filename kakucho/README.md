@@ -139,6 +139,9 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
   （どちらを使うかは `pybp.windowBackend`。`auto` なら PyQt / PySide → tkinter の順に探します）。
   この場合 Figure タブが無いので、📋 コピーと VS Code の保存ダイアログは使えません。
   matplotlib のウィンドウに付いている標準のツールバーを使ってください
+- **図を一切出したくない場合は `pybp.figureDisplay` を `none`** に。webagg サーバーを
+  起動しないのでポート（既定 8988）も使いません。`Agg` バックエンドになるため
+  `plt.show()` は何もせず、`fig.savefig("out.png")` でのファイル出力はそのまま使えます
 
 ---
 
@@ -151,7 +154,7 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | `pybp.pythonPath` | `python` | セッション起動に使う Python 実行ファイル。フルパス可 |
 | `pybp.webaggPort` | `8988` | 図の表示に使うポート。他のアプリと衝突する場合に変更 |
 | `pybp.useBundledPython` | `true` | 同梱の `pybp` を使う。**通常は `true` のままにしてください** |
-| `pybp.figureDisplay` | `tab` | 図の表示先。`tab`（タブを自動で開く）/ `manual`（タブだが自動で開かない）/ `window`（別ウィンドウ） |
+| `pybp.figureDisplay` | `tab` | 図の表示先。`tab`（タブを自動で開く）/ `manual`（タブだが自動で開かない）/ `window`（別ウィンドウ）/ `none`（表示しない） |
 | `pybp.windowBackend` | `auto` | `figureDisplay` が `window` のときのバックエンド。`auto` / `qt` / `tk` |
 | `pybp.autoOpenFigures` | `true` | 非推奨。`pybp.figureDisplay` に統合されました（`false` は `manual` と同じ） |
 

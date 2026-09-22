@@ -123,6 +123,7 @@ cd <このフォルダ>
   - `tab` … figure ごとに VS Code のタブを自動で開く
   - `manual` … webagg だがタブは自動で開かない（📈 で開く）。旧 `autoOpenFigures: false` 相当
   - `window` … Qt / Tk の別ウィンドウ。webagg サーバーは起動しない
+  - `none` … 表示しない。webagg サーバーもポートも使わない（Agg。`savefig` は使える）
 - VS Code 設定 `pybp.windowBackend` : `figureDisplay: window` のバックエンド（`auto` / `qt` / `tk`、既定 `auto`）
 - VS Code 設定 `pybp.autoOpenFigures` : **非推奨**。`figureDisplay` に統合（`false` = `manual`）
 - 環境変数 `PYBP_MPL` : matplotlib バックエンド（既定 `webagg`。`qt` / `tk` / `inline` / `none` / `auto`）。

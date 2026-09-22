@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+plt.rcParams["axes.grid"] = True
+
 x = np.linspace(0, 10, 100)
 
 

@@ -130,7 +130,8 @@ export function activate(context: vscode.ExtensionContext) {
   //  tab    : webagg + figure ごとに VS Code のタブを自動で開く（既定）
   //  manual : webagg だがタブは自動で開かない（📈 で開く）
   //  window : Qt / Tk の別ウィンドウ。webagg サーバーは起動しない
-  type FigureDisplay = "tab" | "manual" | "window";
+  //  none   : 表示しない（Agg）。webagg サーバーもポートも使わない
+  type FigureDisplay = "tab" | "manual" | "window" | "none";
 
   /** ユーザーが明示的に設定した値だけを拾う（既定値は無視する） */
   const explicitly = <T>(key: string): T | undefined => {
@@ -146,11 +147,17 @@ export function activate(context: vscode.ExtensionContext) {
     return config().get<FigureDisplay>("figureDisplay", "tab");
   };
 
-  // window モードでは Figure タブ関連の UI を隠す。
+  /** タブに出るモードか（webagg を使うか） */
+  const figuresInTabs = () => {
+    const d = figureDisplay();
+    return d === "tab" || d === "manual";
+  };
+
+  // タブに出ないモードでは Figure タブ関連の UI を隠す。
   // 未設定＝false として評価されるよう、否定形のキーにしてある。
-  const updateFigureWindowContext = () =>
+  const updateFigureTabsContext = () =>
     vscode.commands.executeCommand(
-      "setContext", "pybp.figureWindow", figureDisplay() === "window");
+      "setContext", "pybp.noFigureTabs", !figuresInTabs());
 
   const setStopped = (v: boolean) =>
     vscode.commands.executeCommand("setContext", "pybp.stopped", v);
@@ -319,9 +326,12 @@ export function activate(context: vscode.ExtensionContext) {
   const sessionEnv = (): { [k: string]: string } => {
     const env: { [k: string]: string } = {
       PYBP_PORT: String(config().get<number>("webaggPort", 8988)),
-      PYBP_MPL: figureDisplay() === "window"
-        ? config().get<string>("windowBackend", "auto")
-        : "webagg",
+      PYBP_MPL: {
+        tab: "webagg",
+        manual: "webagg",
+        none: "none",
+        window: config().get<string>("windowBackend", "auto"),
+      }[figureDisplay()],
     };
     if (config().get<boolean>("useBundledPython", true)) {
       const bundled = path.join(context.extensionPath, "python");
@@ -509,9 +519,11 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("pybp.openFigures", async () => {
-      if (figureDisplay() === "window") {
+      if (!figuresInTabs()) {
         vscode.window.showInformationMessage(
-          "PyBP: 設定 pybp.figureDisplay が window のため、図は別ウィンドウに出ています");
+          figureDisplay() === "window"
+            ? "PyBP: 設定 pybp.figureDisplay が window のため、図は別ウィンドウに出ています"
+            : "PyBP: 設定 pybp.figureDisplay が none のため、図は表示されません");
         return;
       }
       const info = readFigures();
@@ -631,7 +643,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!e.affectsConfiguration("pybp.figureDisplay")
         && !e.affectsConfiguration("pybp.windowBackend")
         && !e.affectsConfiguration("pybp.autoOpenFigures")) { return; }
-      updateFigureWindowContext();
+      updateFigureTabsContext();
       if (!runTerminal) { return; }
       const pick = await vscode.window.showInformationMessage(
         "PyBP: 図の表示先が変わりました。セッションを作り直すと反映されます",
@@ -643,7 +655,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   setStopped(false);
-  updateFigureWindowContext();
+  updateFigureTabsContext();
   updateStatus();
 }
 

@@ -67,9 +67,23 @@ def test_other_backends_still_use_ipython_magic(gui):
     assert not any("start_server" in ln for ln in lines)
 
 
-def test_none_selects_no_backend():
+def test_none_does_not_start_the_webagg_server():
+    """表示しないモードでは webagg サーバーを立てない（ポートも使わない）"""
     lines = startup_lines("none", port=8988, script=None)
-    assert not any("matplotlib" in ln for ln in lines)
+    assert not any("start_server" in ln for ln in lines)
+    assert not any(ln.startswith("%matplotlib") for ln in lines)
+
+
+def test_none_selects_agg_non_interactive():
+    """既定の GUI バックエンドに落ちて plt.show() がブロックしないこと"""
+    matplotlib.use("WebAgg", force=True)   # 別バックエンドから開始
+    matplotlib.interactive(True)
+
+    for ln in _setup_lines(startup_lines("none", port=8988, script=None)):
+        exec(ln, {})
+
+    assert matplotlib.get_backend().lower() == "agg"
+    assert not matplotlib.is_interactive()
 
 
 def test_script_is_run_last():

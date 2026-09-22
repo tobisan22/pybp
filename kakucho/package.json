@@ -33,8 +33,8 @@
     ],
     "menus": {
       "commandPalette": [
-        { "command": "pybp.openFigures", "when": "!pybp.figureWindow" },
-        { "command": "pybp.copyFigure",  "when": "!pybp.figureWindow" }
+        { "command": "pybp.openFigures", "when": "!pybp.noFigureTabs" },
+        { "command": "pybp.copyFigure",  "when": "!pybp.noFigureTabs" }
       ],
       "editor/title/run": [
         { "command": "pybp.run", "when": "editorLangId == python", "group": "navigation" }
@@ -46,7 +46,7 @@
         { "command": "pybp.stepOut",  "when": "editorLangId == python && pybp.stopped", "group": "navigation@4" },
         { "command": "pybp.stop",     "when": "editorLangId == python && pybp.stopped", "group": "navigation@5" },
         { "command": "pybp.restart",  "when": "editorLangId == python && !pybp.stopped", "group": "navigation@1" },
-        { "command": "pybp.openFigures", "when": "editorLangId == python && !pybp.figureWindow", "group": "navigation@0" },
+        { "command": "pybp.openFigures", "when": "editorLangId == python && !pybp.noFigureTabs", "group": "navigation@0" },
         { "command": "pybp.copyFigure", "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive", "group": "navigation@0" }
       ]
     },
@@ -70,11 +70,12 @@
         },
         "pybp.figureDisplay": {
           "type": "string",
-          "enum": ["tab", "manual", "window"],
+          "enum": ["tab", "manual", "window", "none"],
           "enumDescriptions": [
             "VS Code のタブに出す。figure ごとに 1 タブ、作られたら自動で開く",
             "VS Code のタブに出すが自動では開かない。📈 PyBP: Open Figures で開く",
-            "OS の別ウィンドウに出す（matplotlib の Qt / Tk バックエンド）。タブ・📋 コピー・保存ダイアログは使えない"
+            "OS の別ウィンドウに出す（matplotlib の Qt / Tk バックエンド）。タブ・📋 コピー・保存ダイアログは使えない",
+            "図を表示しない。webagg サーバーを起動せずポートも使わない（Agg バックエンド）。plt.show() は何もせず、savefig は使える"
           ],
           "default": "tab",
           "description": "matplotlib の figure をどこに表示するか。変更したら Ctrl+Shift+F5 でセッションを作り直す"

@@ -5,7 +5,8 @@ IPython セッションを起動し、%pybp マジックを登録する。
 script.py が渡されていれば起動直後にそれを実行し、終了後もセッションを維持する。
 
 環境変数:
-  PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline", "none",
+  PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline",
+             "none"（表示しない = Agg。webagg サーバーもポートも使わない）、
              および "auto"（Qt → Tk → webagg の順に、入っているものを選ぶ）。
              VS Code から起動した場合は設定 pybp.figureDisplay が決める
   PYBP_PORT  webagg のポート (既定 8988)。VS Code 設定 pybp.webaggPort から渡される
@@ -79,7 +80,15 @@ def startup_lines(mpl: str, port: int, script: str | Path | None) -> list[str]:
             f"from pybp.webagg import start_server as _s;"
             f" print('[pybp] figures:', _s({port})); del _s",
         ]
-    elif mpl != "none":
+    elif mpl == "none":
+        # 図は作るが表示しない。放っておくと matplotlib が既定の GUI バックエンド
+        # （Windows なら TkAgg）を選び、plt.show() がブロックしてしまうので、
+        # 明示的に Agg を選んで非対話にする。savefig はそのまま使える。
+        lines.append(
+            "import matplotlib as _mpl; _mpl.use('Agg', force=True);"
+            " _mpl.interactive(False); del _mpl"
+        )
+    else:
         lines.append(f"%matplotlib {mpl}")
     lines += ["%load_ext autoreload", "%autoreload 2"]
     if script:

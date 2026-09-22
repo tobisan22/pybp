@@ -8,7 +8,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 図をタブに出すかどうかを VS Code 設定にした。`pybp.figureDisplay` が
   `tab`（既定 / figure ごとにタブを自動で開く）・`manual`（タブだが自動では
-  開かない）・`window`（Qt / Tk の別ウィンドウ。webagg サーバーを起動しない）を取る。
+  開かない）・`window`（Qt / Tk の別ウィンドウ）・`none`（表示しない）を取る。
+  - `window` と `none` では webagg サーバーを起動しないので、ポート（既定 8988）も
+    使わない。
+  - `none` は `Agg` を明示的に選んで非対話にする。放っておくと matplotlib が既定の
+    GUI バックエンド（Windows なら TkAgg）を選び、`plt.show()` がブロックしてしまう
+    ため。`savefig` でのファイル出力はそのまま使える。
   - `window` のバックエンドは `pybp.windowBackend`（`auto` / `qt` / `tk`）。`auto` は
     Python 側の `resolve_backend()` が PyQt5 / PyQt6 / PySide6 / PySide2 → tkinter の
     順に探し、どれも無ければ webagg へ落とす。`%matplotlib qt` に失敗すると
