@@ -5,7 +5,9 @@ IPython セッションを起動し、%pybp マジックを登録する。
 script.py が渡されていれば起動直後にそれを実行し、終了後もセッションを維持する。
 
 環境変数:
-  PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline", "none" など
+  PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline", "none",
+             および "auto"（Qt → Tk → webagg の順に、入っているものを選ぶ）。
+             VS Code から起動した場合は設定 pybp.figureDisplay が決める
   PYBP_PORT  webagg のポート (既定 8988)。VS Code 設定 pybp.webaggPort から渡される
   PYBP_FILE  赤丸 JSON のパスを明示したい場合
 """
@@ -22,6 +24,37 @@ from IPython import start_ipython
 from traitlets.config import Config
 
 from .core import FIGURES_NAME, SESSION_NAME, find_vscode_dir
+
+
+# "auto" を解決するときに探す GUI バインディング。先に見つかった方を使う。
+_GUI_BINDINGS = (
+    ("qt", ("PyQt5", "PyQt6", "PySide6", "PySide2")),
+    ("tk", ("tkinter",)),
+)
+
+
+def resolve_backend(mpl: str) -> str:
+    """"auto" を、その環境で実際に使えるバックエンド名へ解決する。
+
+    別ウィンドウ表示（VS Code 設定 pybp.figureDisplay = window）で使う。
+    Qt も Tk も無い環境で %matplotlib qt に失敗すると、バックエンドが既定のまま
+    残って図が一切出なくなるため、ここで webagg へ落としておく。
+    """
+    if mpl != "auto":
+        return mpl
+
+    import importlib.util as u
+
+    for gui, mods in _GUI_BINDINGS:
+        for mod in mods:
+            try:
+                found = u.find_spec(mod) is not None
+            except (ImportError, ValueError):
+                found = False
+            if found:
+                return gui
+    print("[pybp] 警告: Qt / Tk が見つからないため webagg で表示します")
+    return "webagg"
 
 
 def startup_lines(mpl: str, port: int, script: str | Path | None) -> list[str]:
@@ -68,7 +101,7 @@ def main() -> None:
         atexit.register(lambda: figures.unlink(missing_ok=True))
 
     # --- IPython 設定 ---
-    mpl = os.environ.get("PYBP_MPL", "webagg").lower()
+    mpl = resolve_backend(os.environ.get("PYBP_MPL", "webagg").lower())
     port = int(os.environ.get("PYBP_PORT", "8988"))
     exec_lines = startup_lines(mpl, port, script)
 

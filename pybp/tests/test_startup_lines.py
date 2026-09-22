@@ -15,7 +15,7 @@ webagg サーバの WebSocket が manager.add_web_socket を呼んだ時点で�
 import matplotlib
 import pytest
 
-from pybp.__main__ import startup_lines
+from pybp.__main__ import resolve_backend, startup_lines
 
 
 def _setup_lines(lines):
@@ -81,3 +81,51 @@ def test_autoreload_enabled():
     lines = startup_lines("webagg", port=8988, script=None)
     assert "%load_ext autoreload" in lines
     assert "%autoreload 2" in lines
+
+
+# ---- 別ウィンドウ表示（VS Code 設定 pybp.figureDisplay = window）のバックエンド解決 ----
+
+
+def test_resolve_backend_leaves_explicit_names_alone():
+    for name in ("webagg", "qt", "tk", "inline", "none"):
+        assert resolve_backend(name) == name
+
+
+def test_resolve_backend_auto_prefers_qt(monkeypatch):
+    import importlib.util
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda m: object() if m in ("PyQt5", "tkinter") else None,
+    )
+    assert resolve_backend("auto") == "qt"
+
+
+def test_resolve_backend_auto_falls_back_to_tk(monkeypatch):
+    import importlib.util
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda m: object() if m == "tkinter" else None
+    )
+    assert resolve_backend("auto") == "tk"
+
+
+def test_resolve_backend_auto_falls_back_to_webagg(monkeypatch):
+    """Qt も Tk も無ければ webagg。%matplotlib 失敗で図が消えるのを避ける。"""
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda m: None)
+    assert resolve_backend("auto") == "webagg"
+
+
+def test_resolve_backend_survives_broken_binding(monkeypatch):
+    """find_spec が壊れたパッケージで例外を投げても落ちない"""
+    import importlib.util
+
+    def boom(m):
+        if m == "tkinter":
+            return object()
+        raise ImportError(m)
+
+    monkeypatch.setattr(importlib.util, "find_spec", boom)
+    assert resolve_backend("auto") == "tk"

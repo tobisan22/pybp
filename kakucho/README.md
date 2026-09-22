@@ -132,7 +132,13 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
   （png / svg / pdf など）に従います
 - `plt.close(n)` で閉じた figure のタブは自動的に閉じます。`plt.close("all")` で全部閉じます
 - タブを自分で閉じても figure 自体は生きているので、**PyBP: Open Figures**（📈 ボタン）で開き直せます
-- 自動で開いてほしくない場合は設定 `pybp.autoOpenFigures` を `false` に
+- 自動で開いてほしくない場合は設定 `pybp.figureDisplay` を `manual` に。
+  figure は作られたままなので、**PyBP: Open Figures**（📈）で必要なときだけ開けます
+- **タブではなく OS の別ウィンドウに出したい場合は `pybp.figureDisplay` を `window`** に。
+  matplotlib の Qt / Tk バックエンドに切り替わり、webagg サーバーは起動しません
+  （どちらを使うかは `pybp.windowBackend`。`auto` なら PyQt / PySide → tkinter の順に探します）。
+  この場合 Figure タブが無いので、📋 コピーと VS Code の保存ダイアログは使えません。
+  matplotlib のウィンドウに付いている標準のツールバーを使ってください
 
 ---
 
@@ -145,9 +151,15 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | `pybp.pythonPath` | `python` | セッション起動に使う Python 実行ファイル。フルパス可 |
 | `pybp.webaggPort` | `8988` | 図の表示に使うポート。他のアプリと衝突する場合に変更 |
 | `pybp.useBundledPython` | `true` | 同梱の `pybp` を使う。**通常は `true` のままにしてください** |
-| `pybp.autoOpenFigures` | `true` | figure が作られたら Figure タブを自動で開く |
+| `pybp.figureDisplay` | `tab` | 図の表示先。`tab`（タブを自動で開く）/ `manual`（タブだが自動で開かない）/ `window`（別ウィンドウ） |
+| `pybp.windowBackend` | `auto` | `figureDisplay` が `window` のときのバックエンド。`auto` / `qt` / `tk` |
+| `pybp.autoOpenFigures` | `true` | 非推奨。`pybp.figureDisplay` に統合されました（`false` は `manual` と同じ） |
 
-環境変数 `PYBP_MPL` で matplotlib のバックエンドを変えられます（既定 `webagg`。`qt` / `tk` / `inline` / `none`）。
+`pybp.figureDisplay` を変えたら **Ctrl+Shift+F5** でセッションを作り直してください
+（バックエンドは起動時に決まります）。確認のダイアログも出ます。
+
+ターミナルから `python -m pybp` を直接起動する場合は、環境変数 `PYBP_MPL` で
+バックエンドを指定できます（既定 `webagg`。`qt` / `tk` / `inline` / `none` / `auto`）。
 
 ---
 
@@ -159,6 +171,8 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | `PyBP: Python を実行できません` | `pybp.pythonPath` が正しい Python を指していません。フルパスで指定してみてください |
 | **依存パッケージの確認が毎回出る** | `pybp.pythonPath` が、依存を入れた Python と別のものを指しています。ターミナルで `python -c "import sys; print(sys.executable)"` を実行し、その結果を `pybp.pythonPath` に設定してください |
 | **F5 が反応しない / コマンドが無い** | VS Code を完全終了して開き直してください。それでも駄目なら `code --uninstall-extension local.pybp` の後に再インストール |
+| **`pybp を import できません` と出る** | 拡張に同梱された `pybp` に PYTHONPATH が通っていません。設定 `pybp.useBundledPython` が `true` になっているか確認し、拡張を入れ直して VS Code を完全終了・再起動してください |
+| **`No module named 'IPython'` などで落ちる** | `pybp.pythonPath` の Python に依存が入っていません。F5 で出る［インストール］を選ぶか、`python -m pip install ipython ipdb matplotlib tornado` を実行してください |
 | **図が出ない / タブが空白** | `pybp.webaggPort`（既定 8988）が他のアプリと衝突しています。別の番号に変えてセッションを再起動（Ctrl+Shift+F5）してください。タブが空白のままならパネルの境界をドラッグしてサイズを変えると描画されます |
 | **図のコピーができない** | Windows のみ対応です。macOS / Linux では 💾 での保存を使ってください |
 | **セッションがおかしくなった** | **Ctrl+Shift+F5** でセッションを作り直してください。それでも駄目ならターミナル「PyBP」を閉じてから F5 |
@@ -177,6 +191,7 @@ PyBP は拡張と Python の間のやり取りに、開いているフォルダ�
 | `py_debug_state.json` | Python → 拡張 : 現在の停止位置 |
 | `py_session.json` | Python → 拡張 : セッションが生きているかの通知 |
 | `py_figures.json` | Python → 拡張 : 表示中の figure 番号 |
+| `py_save_request.json` | Python → 拡張 : 図の保存ダイアログ要求 |
 | `py_ext_log.txt` | 拡張の動作ログ（調査用） |
 
 git で管理しているフォルダなら、`.gitignore` に `.vscode/py_*` を足しておくと邪魔になりません。

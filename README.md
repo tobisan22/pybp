@@ -73,7 +73,8 @@ cd <このフォルダ>
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
-| `No module named pybp` | 編集可能インストールが旧パスのまま / 別の Python に入っている | `setup.ps1`。`pybp.pythonPath` と `-Python` を一致させる |
+| `No module named pybp` | 拡張が `pybp` を見つけられない | 起動前に検出して原因付きで通知される。`.vscode/py_ext_log.txt` の `PROBE pybp=` と `SESSION PYTHONPATH=` を見る。`useBundledPython: false` なら `setup.ps1`、`true` なら拡張を再インストール |
+| 依存は入れたのに `ModuleNotFoundError` | ターミナルの `python` が、拡張が診断した Python と別（conda / venv の自動アクティベート） | 対処済み。ターミナルは診断した絶対パスの Python を直接起動する。`py_ext_log.txt` の `PROBE exe=` で実際の処理系を確認できる |
 | import できるが古い挙動 | 旧 egg-info(0.1.0) や別 site-packages のコピーが優先 | `pip uninstall pybp` を `pip show pybp` が空になるまで繰り返し → `setup.ps1` |
 | F5 が反応しない / コマンドが無い | 旧パスの拡張が入ったまま、または未インストール | `code --uninstall-extension local.pybp` → 再インストール → VS Code 再起動 |
 | `tsc` が動かない・compile 失敗 | 移動でコピーされた `node_modules` が壊れている（`.bin` のリンク等） | `node_modules` を削除して `npm install` |
@@ -81,7 +82,7 @@ cd <このフォルダ>
 | 図が出ない | webagg ポート競合 | `pybp.webaggPort` と環境変数 `PYBP_PORT` を揃える／変更 |
 | `pybp/` を編集しても反映されない | 同梱版が `PYTHONPATH` 経由で優先されている | 設定 `pybp.useBundledPython` を `false` にする |
 | 依存パッケージの確認ダイアログが毎回出る | `pybp.pythonPath` が依存を入れた Python と別 | `pybp.pythonPath` を確認する |
-| Figure タブが空白（特に最初の1枚） | 背面で生成されたタブでは matplotlib の canvas サイズ確定が走らない | 拡張側で iframe を 1px 揺らして対処済み。再発したらパネルの境界をドラッグしてサイズを変える |
+| Figure タブが空白（特に最初の1枚） | 背面で生成されたタブでは canvas のサイズ確定が後から走り、同サイズ resize に差分画像しか返らない | Python 側（`webagg.py` の `_force_full_redraw_on_resize`）で対処済み。再発したらパネルの境界をドラッグしてサイズを変える |
 
 ## 引っ越し時のルール
 
@@ -118,10 +119,20 @@ cd <このフォルダ>
 - VS Code 設定 `pybp.pythonPath` : セッション起動に使う Python（既定 `python`）
 - VS Code 設定 `pybp.useBundledPython` : 同梱の pybp を `PYTHONPATH` 経由で使う（既定 `true`）。**開発時は `false`**
 - VS Code 設定 `pybp.webaggPort` : webagg のポート（既定 `8988`）。セッション起動時に環境変数 `PYBP_PORT` として Python へ渡される
-- 環境変数 `PYBP_MPL` : matplotlib バックエンド（既定 `webagg`。`qt` / `tk` / `inline` / `none`）
+- VS Code 設定 `pybp.figureDisplay` : 図の表示先（既定 `tab`）
+  - `tab` … figure ごとに VS Code のタブを自動で開く
+  - `manual` … webagg だがタブは自動で開かない（📈 で開く）。旧 `autoOpenFigures: false` 相当
+  - `window` … Qt / Tk の別ウィンドウ。webagg サーバーは起動しない
+- VS Code 設定 `pybp.windowBackend` : `figureDisplay: window` のバックエンド（`auto` / `qt` / `tk`、既定 `auto`）
+- VS Code 設定 `pybp.autoOpenFigures` : **非推奨**。`figureDisplay` に統合（`false` = `manual`）
+- 環境変数 `PYBP_MPL` : matplotlib バックエンド（既定 `webagg`。`qt` / `tk` / `inline` / `none` / `auto`）。
+  ターミナルから `python -m pybp` を直接叩く時用。VS Code から起動した場合は
+  `pybp.figureDisplay` / `pybp.windowBackend` が上書きする
 
 ## 制約
 
 - 赤丸がある実行は pdb トレースが入るため、純粋な数値計算は遅くなる（赤丸ゼロなら素の速度）
 - 停止中の変数ホバー表示は非対応（`ipdb>` で変数名を打つ）
+- `figureDisplay: window` では Figure タブが無いため、📋 コピーと VS Code の保存ダイアログは使えない
+  （matplotlib 標準のウィンドウのツールバーを使う）
 - 標準ライブラリ・IPython・matplotlib 内部には F11 でも潜らない（`core.py` の `SKIP`）

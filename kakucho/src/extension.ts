@@ -42,7 +42,7 @@ function removeQuiet(p: string) {
   try { fs.unlinkSync(p); } catch { /* ignore */ }
 }
 
-// ---- 一時的な計測ログ（figure タブ空白問題の調査用。原因確定後に削除する） --------
+// ---- 拡張の動作ログ（不具合報告用。セッション起動のたびに書き直される） ------------
 const EXT_LOG_NAME = "py_ext_log.txt";
 
 function extLogPath(): string | undefined {
@@ -89,15 +89,11 @@ const CLIP_PS =
 
 function setClipboardImage(pngPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    extLog("COPY  powershell.exe 起動");
     execFile(
       "powershell.exe",
       ["-STA", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", CLIP_PS],
       { env: { ...process.env, PYBP_CLIP_PNG: pngPath }, windowsHide: true },
-      (err, stdout, stderr) => {
-        extLog(`COPY  powershell 終了 err=${err ? err.message : "なし"}`
-          + ` stdout=${JSON.stringify((stdout || "").trim().slice(0, 200))}`
-          + ` stderr=${JSON.stringify((stderr || "").trim().slice(0, 400))}`);
+      (err, _stdout, stderr) => {
         if (err) { reject(new Error(stderr?.trim() || err.message)); } else { resolve(); }
       },
     );
@@ -129,6 +125,32 @@ export function activate(context: vscode.ExtensionContext) {
   let activeFigure: number | undefined;                          // 最後にフォーカスされた figure
 
   const config = () => vscode.workspace.getConfiguration("pybp");
+
+  // ---- 図の表示先 ----
+  //  tab    : webagg + figure ごとに VS Code のタブを自動で開く（既定）
+  //  manual : webagg だがタブは自動で開かない（📈 で開く）
+  //  window : Qt / Tk の別ウィンドウ。webagg サーバーは起動しない
+  type FigureDisplay = "tab" | "manual" | "window";
+
+  /** ユーザーが明示的に設定した値だけを拾う（既定値は無視する） */
+  const explicitly = <T>(key: string): T | undefined => {
+    const i = config().inspect<T>(key);
+    return i?.workspaceFolderValue ?? i?.workspaceValue ?? i?.globalValue;
+  };
+
+  const figureDisplay = (): FigureDisplay => {
+    const v = explicitly<FigureDisplay>("figureDisplay");
+    if (v) { return v; }
+    // 旧 pybp.autoOpenFigures: false との下位互換
+    if (explicitly<boolean>("autoOpenFigures") === false) { return "manual"; }
+    return config().get<FigureDisplay>("figureDisplay", "tab");
+  };
+
+  // window モードでは Figure タブ関連の UI を隠す。
+  // 未設定＝false として評価されるよう、否定形のキーにしてある。
+  const updateFigureWindowContext = () =>
+    vscode.commands.executeCommand(
+      "setContext", "pybp.figureWindow", figureDisplay() === "window");
 
   const setStopped = (v: boolean) =>
     vscode.commands.executeCommand("setContext", "pybp.stopped", v);
@@ -193,8 +215,6 @@ export function activate(context: vscode.ExtensionContext) {
   // （pybp.stopped と同じ、この拡張で実績のある方式に揃える）。
   const updateFigureContext = () => {
     const active = [...figurePanels.values()].some(p => p.active);
-    const visible = [...figurePanels.values()].some(p => p.visible);
-    extLog(`CTX   pybp.figureActive=${active} (visible=${visible})`);
     vscode.commands.executeCommand("setContext", "pybp.figureActive", active);
   };
 
@@ -216,20 +236,15 @@ export function activate(context: vscode.ExtensionContext) {
 </style>
 </head><body><iframe src="${base}/${num}"></iframe>
 <!-- ${Date.now()}-${Math.random().toString(36).slice(2)} --></body></html>`;
-    extLog(`PANEL create fig${num}`);
     panel.webview.html = figureHtml();
-    extLog(`PANEL html set fig${num} (initial) visible=${panel.visible} active=${panel.active}`);
 
     // 背面タブが空白になる問題は Python 側（pybp.webagg）で対処している。
     // ブラウザは canvas のリサイズで中身を捨てるため、resize には必ずフル画像を返す。
     panel.onDidChangeViewState(e => {
-      const p = e.webviewPanel;
-      extLog(`PANEL viewstate fig${num} visible=${p.visible} active=${p.active}`);
-      if (p.active) { activeFigure = num; }
+      if (e.webviewPanel.active) { activeFigure = num; }
       updateFigureContext();
     });
     panel.onDidDispose(() => {
-      extLog(`PANEL dispose fig${num}`);
       figurePanels.delete(num);
       if (activeFigure === num) { activeFigure = undefined; }
       updateFigureContext();
@@ -261,23 +276,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
     removeQuiet(reqPath);            // 一度きりの要求として消す
     const fmt = (req.format || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
-    extLog(`SAVE  要求 fig${req.figure} format=${fmt}`);
 
     const uri = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.file(
         path.join(workspaceRoot() ?? os.homedir(), `figure${req.figure}.${fmt}`)),
       filters: { [fmt.toUpperCase()]: [fmt] },
     });
-    if (!uri) {
-      extLog("SAVE  キャンセルされた");
-      return;
-    }
+    if (!uri) { return; }
     const port = config().get<number>("webaggPort", 8988);
     const base = readFigures()?.url ?? `http://127.0.0.1:${port}`;
     try {
       const data = await fetchUrl(`${base}/${req.figure}/download.${fmt}`);
       fs.writeFileSync(uri.fsPath, data);
-      extLog(`SAVE  保存完了 ${uri.fsPath} (${data.length} bytes)`);
       vscode.window.setStatusBarMessage(
         `PyBP: ${path.basename(uri.fsPath)} を保存しました`, 2500);
     } catch (e) {
@@ -288,8 +298,6 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const syncFigurePanels = (info: { url: string; figures: number[] }) => {
-    extLog(`SYNC  figures=[${info.figures.join(",")}] url=${info.url}`
-      + ` 既存パネル=[${[...figurePanels.keys()].join(",")}]`);
     for (const n of info.figures) { openFigurePanel(info.url, n); }
     for (const [n, p] of [...figurePanels]) {      // plt.close された figure のタブは閉じる
       if (!info.figures.includes(n)) { p.dispose(); }
@@ -305,10 +313,15 @@ export function activate(context: vscode.ExtensionContext) {
   // セッションに渡す環境変数。
   //  PYBP_PORT  : 渡さないと Python は既定の 8988 で待ち受け、拡張だけが設定値の
   //               ポートを見にいって figure タブが空になる
+  //  PYBP_MPL   : matplotlib バックエンド。pybp.figureDisplay から決まる。
+  //               "auto" は Python 側が Qt → Tk → webagg の順に解決する
   //  PYTHONPATH : 同梱した pybp を pip install 無しで import できるようにする
   const sessionEnv = (): { [k: string]: string } => {
     const env: { [k: string]: string } = {
       PYBP_PORT: String(config().get<number>("webaggPort", 8988)),
+      PYBP_MPL: figureDisplay() === "window"
+        ? config().get<string>("windowBackend", "auto")
+        : "webagg",
     };
     if (config().get<boolean>("useBundledPython", true)) {
       const bundled = path.join(context.extensionPath, "python");
@@ -322,20 +335,51 @@ export function activate(context: vscode.ExtensionContext) {
     return env;
   };
 
-  /** 不足している import 名を返す。python 自体が起動できない場合は error を返す */
-  const probeDeps = (python: string, env: { [k: string]: string }):
-    Promise<{ missing: string[] } | { error: string }> =>
+  /**
+   * 起動に使う Python を調べる。
+   *
+   * exe は解決済みの絶対パス。ターミナルでは必ずこれを使う。拡張ホストとターミナルでは
+   * PATH が異なることがあり（conda / venv の自動アクティベート）、`python` のまま
+   * 送ると「診断した処理系」と「実際に動く処理系」がずれて、依存は揃っているのに
+   * ModuleNotFoundError になる。
+   * pybp 自身も見る — 同梱版を PYTHONPATH で通しているので、ここが null なら
+   * ターミナルは必ず `No module named pybp` で落ちる。
+   */
+  type Probe = { exe: string; missing: string[]; pybp: string | null };
+
+  const PROBE_CODE = [
+    "import json, sys",
+    "import importlib.util as u",
+    "def where(name):",
+    "    try:",
+    "        s = u.find_spec(name)",
+    "    except Exception as e:",
+    "        return '<error: %s>' % e",
+    "    if s is None:",
+    "        return None",
+    "    return s.origin or next(iter(s.submodule_search_locations or []), None)",
+    "print(json.dumps({",
+    "    'exe': sys.executable,",
+    "    'missing': [m for m in sys.argv[1:] if where(m) is None],",
+    "    'pybp': where('pybp'),",
+    "}))",
+  ].join("\n");
+
+  const probePython = (python: string, env: { [k: string]: string }):
+    Promise<Probe | { error: string }> =>
     new Promise(resolve => {
-      const code = "import importlib.util as u,sys;"
-        + "print(' '.join(m for m in sys.argv[1:] if u.find_spec(m) is None))";
-      execFile(python, ["-c", code, ...REQUIRED_MODULES.map(r => r.mod)],
+      execFile(python, ["-c", PROBE_CODE, ...REQUIRED_MODULES.map(r => r.mod)],
         { env: { ...process.env, ...env }, windowsHide: true },
         (err, stdout, stderr) => {
           if (err) {
             resolve({ error: (stderr || err.message).trim() });
             return;
           }
-          resolve({ missing: stdout.trim().split(/\s+/).filter(Boolean) });
+          try {
+            resolve(JSON.parse(stdout.trim().split(/\r?\n/).pop() ?? "") as Probe);
+          } catch {
+            resolve({ error: `診断出力を解釈できません: ${stdout.trim().slice(0, 200)}` });
+          }
         });
     });
 
@@ -368,27 +412,44 @@ export function activate(context: vscode.ExtensionContext) {
     extLog("SESSION start");
 
     const python = config().get<string>("pythonPath", "python");
+    const bundled = config().get<boolean>("useBundledPython", true);
     const env = sessionEnv();
-    extLog(`SESSION python=${python} PYTHONPATH=${env.PYTHONPATH ?? "(未設定)"}`);
+    extLog(`SESSION pythonPath=${python} useBundledPython=${bundled}`);
+    extLog(`SESSION figureDisplay=${figureDisplay()} PYBP_MPL=${env.PYBP_MPL}`);
+    extLog(`SESSION PYTHONPATH=${env.PYTHONPATH ?? "(未設定)"}`);
 
-    const probe = await probeDeps(python, env);
+    const probe = await probePython(python, env);
     if ("error" in probe) {
-      extLog(`DEPS  python を実行できない: ${probe.error.slice(0, 300)}`);
+      extLog(`PROBE python を実行できない: ${probe.error.slice(0, 300)}`);
       vscode.window.showErrorMessage(
         `PyBP: Python を実行できません（${python}）。設定 pybp.pythonPath を確認してください`);
       return;
     }
-    extLog(`DEPS  不足モジュール: ${probe.missing.join(", ") || "なし"}`);
+    extLog(`PROBE exe=${probe.exe}`);
+    extLog(`PROBE pybp=${probe.pybp ?? "(import できない)"}`);
+    extLog(`PROBE 不足モジュール: ${probe.missing.join(", ") || "なし"}`);
+
     if (probe.missing.length > 0) {
       const pkgs = probe.missing.map(
         m => REQUIRED_MODULES.find(r => r.mod === m)?.pip ?? m);
       const pick = await vscode.window.showWarningMessage(
         `PyBP: 依存パッケージが不足しています（${pkgs.join(", ")}）`,
         "インストール", "あとで");
-      if (pick === "インストール" && !await installDeps(python, pkgs, env)) {
+      if (pick === "インストール" && !await installDeps(probe.exe, pkgs, env)) {
         return;
       }
       // 「あとで」でもセッションは起動する。診断の誤検出で操作不能になるのを避けるため。
+    }
+
+    // pybp 本体が見えなければ、起動しても必ず ModuleNotFoundError で落ちる。
+    // 心当たりを添えてここで止める（ターミナルの一瞬のエラーより分かりやすい）。
+    if (!probe.pybp) {
+      const hint = bundled
+        ? `同梱版に PYTHONPATH が通っていません（${env.PYTHONPATH ?? "未設定"}）`
+        : "設定 pybp.useBundledPython が false です。pip install -e ./pybp を実行するか true に戻してください";
+      extLog(`PROBE 中止: pybp を import できない — ${hint}`);
+      vscode.window.showErrorMessage(`PyBP: pybp を import できません — ${hint}`);
+      return;
     }
 
     // 前セッションの残骸（強制終了時など）を掃除
@@ -400,10 +461,20 @@ export function activate(context: vscode.ExtensionContext) {
       removeQuiet(path.join(dir, SAVE_REQUEST_NAME));
     }
     closeAllFigurePanels();
-    runTerminal = vscode.window.createTerminal({ name: "PyBP", env });
+    if (runTerminal) { runTerminal.dispose(); }
+
+    // シェルを挟まず Python 自身をターミナルのプロセスにする。
+    //  - 診断した処理系（probe.exe）と実際に動く処理系が必ず一致する
+    //  - パスに空白があってもクォート（PowerShell の & 演算子）を気にしなくてよい
+    //  - PowerShell プロファイルや conda の自動アクティベートが割り込まない
+    // ターミナルへの sendText は pty 経由で IPython / ipdb の標準入力に届くので、
+    // 停止中のコマンド送信や %pybp での再実行はこれまで通り動く。
+    const args = ["-m", "pybp", ...(scriptPath ? [scriptPath] : [])];
+    extLog(`SESSION launch ${probe.exe} ${args.join(" ")}`);
+    runTerminal = vscode.window.createTerminal({
+      name: "PyBP", shellPath: probe.exe, shellArgs: args, env,
+    });
     runTerminal.show(true);
-    const arg = scriptPath ? ` "${scriptPath}"` : "";
-    runTerminal.sendText(`${python} -m pybp${arg}`);
     updateStatus();
   };
 
@@ -438,6 +509,11 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("pybp.openFigures", async () => {
+      if (figureDisplay() === "window") {
+        vscode.window.showInformationMessage(
+          "PyBP: 設定 pybp.figureDisplay が window のため、図は別ウィンドウに出ています");
+        return;
+      }
       const info = readFigures();
       if (info && info.figures.length > 0) {
         syncFigurePanels(info);
@@ -453,19 +529,14 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("pybp.copyFigure", async () => {
-      extLog("COPY  コマンド起動");
       if (process.platform !== "win32") {
-        extLog(`COPY  中止: platform=${process.platform}`);
         vscode.window.showWarningMessage("PyBP: 画像のクリップボードコピーは Windows のみ対応です");
         return;
       }
       // アイコンを押した時点でフォーカスされているタブを優先し、無ければ直近のものを使う
       const focused = [...figurePanels].find(([, p]) => p.active)?.[0];
       const num = focused ?? activeFigure;
-      extLog(`COPY  focused=${focused} activeFigure=${activeFigure} -> num=${num}`
-        + ` panels=[${[...figurePanels.keys()].join(",")}]`);
       if (num === undefined) {
-        extLog("COPY  中止: 対象の figure が特定できない");
         vscode.window.showWarningMessage("PyBP: コピーする Figure タブがありません");
         return;
       }
@@ -473,13 +544,9 @@ export function activate(context: vscode.ExtensionContext) {
       const base = readFigures()?.url ?? `http://127.0.0.1:${port}`;
       const tmp = path.join(os.tmpdir(), `pybp-fig${num}-${Date.now()}.png`);
       try {
-        extLog(`COPY  取得開始 ${base}/${num}/download.png`);
         const png = await fetchUrl(`${base}/${num}/download.png`);
-        extLog(`COPY  取得完了 ${png.length} bytes -> ${tmp}`);
         fs.writeFileSync(tmp, png);
-        extLog(`COPY  一時ファイル書き込み完了 exists=${fs.existsSync(tmp)}`);
         await setClipboardImage(tmp);
-        extLog("COPY  PowerShell 正常終了 — クリップボード投入成功");
         vscode.window.setStatusBarMessage(`PyBP: Figure ${num} をコピーしました`, 2000);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -542,7 +609,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- figure タブの自動オープン ----
   const onFigures = async () => {
-    if (!config().get<boolean>("autoOpenFigures", true)) { return; }
+    if (figureDisplay() !== "tab") { return; }
     const info = readFigures();
     if (info) { syncFigurePanels(info); }
   };
@@ -557,7 +624,26 @@ export function activate(context: vscode.ExtensionContext) {
   saveWatcher.onDidChange(handleSaveRequest);
   context.subscriptions.push(saveWatcher);
 
+  // ---- 設定変更への追従 ----
+  // バックエンドはセッション起動時に決まるので、走っている間は作り直さないと変わらない。
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(async e => {
+      if (!e.affectsConfiguration("pybp.figureDisplay")
+        && !e.affectsConfiguration("pybp.windowBackend")
+        && !e.affectsConfiguration("pybp.autoOpenFigures")) { return; }
+      updateFigureWindowContext();
+      if (!runTerminal) { return; }
+      const pick = await vscode.window.showInformationMessage(
+        "PyBP: 図の表示先が変わりました。セッションを作り直すと反映されます",
+        "再起動");
+      if (pick === "再起動") {
+        await vscode.commands.executeCommand("pybp.restart");
+      }
+    }),
+  );
+
   setStopped(false);
+  updateFigureWindowContext();
   updateStatus();
 }
 

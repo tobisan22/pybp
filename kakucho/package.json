@@ -32,6 +32,10 @@
       { "command": "pybp.copyFigure", "key": "ctrl+c",       "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive" }
     ],
     "menus": {
+      "commandPalette": [
+        { "command": "pybp.openFigures", "when": "!pybp.figureWindow" },
+        { "command": "pybp.copyFigure",  "when": "!pybp.figureWindow" }
+      ],
       "editor/title/run": [
         { "command": "pybp.run", "when": "editorLangId == python", "group": "navigation" }
       ],
@@ -42,7 +46,7 @@
         { "command": "pybp.stepOut",  "when": "editorLangId == python && pybp.stopped", "group": "navigation@4" },
         { "command": "pybp.stop",     "when": "editorLangId == python && pybp.stopped", "group": "navigation@5" },
         { "command": "pybp.restart",  "when": "editorLangId == python && !pybp.stopped", "group": "navigation@1" },
-        { "command": "pybp.openFigures", "when": "editorLangId == python", "group": "navigation@0" },
+        { "command": "pybp.openFigures", "when": "editorLangId == python && !pybp.figureWindow", "group": "navigation@0" },
         { "command": "pybp.copyFigure", "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive", "group": "navigation@0" }
       ]
     },
@@ -64,10 +68,33 @@
           "default": true,
           "description": "拡張に同梱した pybp を PYTHONPATH 経由で使う（pip install 不要）。pybp/ を編集して開発する場合は false にする — true のままだと同梱版が pip install -e を隠してしまう"
         },
+        "pybp.figureDisplay": {
+          "type": "string",
+          "enum": ["tab", "manual", "window"],
+          "enumDescriptions": [
+            "VS Code のタブに出す。figure ごとに 1 タブ、作られたら自動で開く",
+            "VS Code のタブに出すが自動では開かない。📈 PyBP: Open Figures で開く",
+            "OS の別ウィンドウに出す（matplotlib の Qt / Tk バックエンド）。タブ・📋 コピー・保存ダイアログは使えない"
+          ],
+          "default": "tab",
+          "description": "matplotlib の figure をどこに表示するか。変更したら Ctrl+Shift+F5 でセッションを作り直す"
+        },
+        "pybp.windowBackend": {
+          "type": "string",
+          "enum": ["auto", "qt", "tk"],
+          "enumDescriptions": [
+            "PyQt / PySide があれば Qt、無ければ Tk",
+            "Qt（PyQt5 / PyQt6 / PySide2 / PySide6 のいずれかが必要）",
+            "Tk（標準の tkinter）"
+          ],
+          "default": "auto",
+          "description": "pybp.figureDisplay が window のときに使う matplotlib バックエンド"
+        },
         "pybp.autoOpenFigures": {
           "type": "boolean",
           "default": true,
-          "description": "figure が作られたら Figure タブを自動で開く"
+          "description": "（非推奨）pybp.figureDisplay に統合されました。false は figureDisplay: manual と同じ",
+          "markdownDeprecationMessage": "`#pybp.figureDisplay#` に統合されました。`false` は `manual` に相当します。"
         }
       }
     }
