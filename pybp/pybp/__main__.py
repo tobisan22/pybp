@@ -24,6 +24,36 @@ from traitlets.config import Config
 from .core import FIGURES_NAME, SESSION_NAME, find_vscode_dir
 
 
+def startup_lines(mpl: str, port: int, script: str | Path | None) -> list[str]:
+    """IPython の exec_lines を組む。
+
+    webagg だけは %matplotlib を通さない。%matplotlib は gui 名を IPython 側の
+    テーブルで解決するため、'webagg' を知らない IPython では例外になる。
+    exec_lines の例外はセッションを止めないので、バックエンドは既定
+    （Qt binding が入っていれば QtAgg）のまま残り、figure が Qt マネージャで
+    作られる。その状態で figure タブを開くと webagg サーバーの WebSocket が
+    manager.add_web_socket を呼び、FigureManagerQT には無いため
+    AttributeError になる。切り替えは matplotlib へ直接指示する。
+
+    Qt/Tk はイベントループ統合が必要なので %matplotlib に任せる。
+    """
+    lines: list[str] = []
+    if mpl == "webagg":
+        lines += [
+            "import matplotlib as _mpl; _mpl.use('WebAgg', force=True);"
+            " _mpl.interactive(True);"
+            " _mpl.rcParams['webagg.open_in_browser'] = False; del _mpl",
+            f"from pybp.webagg import start_server as _s;"
+            f" print('[pybp] figures:', _s({port})); del _s",
+        ]
+    elif mpl != "none":
+        lines.append(f"%matplotlib {mpl}")
+    lines += ["%load_ext autoreload", "%autoreload 2"]
+    if script:
+        lines.append(f'%pybp "{script}"')
+    return lines
+
+
 def main() -> None:
     script = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else None
 
@@ -39,18 +69,8 @@ def main() -> None:
 
     # --- IPython 設定 ---
     mpl = os.environ.get("PYBP_MPL", "webagg").lower()
-    exec_lines: list[str] = []
-    if mpl != "none":
-        exec_lines.append(f"%matplotlib {mpl}")
-    if mpl == "webagg":
-        port = int(os.environ.get("PYBP_PORT", "8988"))
-        exec_lines += [
-            "import matplotlib as _mpl; _mpl.rcParams['webagg.open_in_browser'] = False; del _mpl",
-            f"from pybp.webagg import start_server as _s; print('[pybp] figures:', _s({port})); del _s",
-        ]
-    exec_lines += ["%load_ext autoreload", "%autoreload 2"]
-    if script:
-        exec_lines.append(f'%pybp "{script}"')
+    port = int(os.environ.get("PYBP_PORT", "8988"))
+    exec_lines = startup_lines(mpl, port, script)
 
     c = Config()
     c.InteractiveShellApp.extensions = ["pybp.core"]

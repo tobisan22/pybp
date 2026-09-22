@@ -10,3 +10,5 @@ vsc-extension-quickstart.md
 **/*.ts
 **/.vscode-test.*
 scripts/**
+.pytest_cache/**
+**/__pycache__/**
