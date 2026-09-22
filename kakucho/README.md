@@ -9,6 +9,11 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
 
 ---
 
+## 動作環境
+
+**この拡張機能は Windows 専用です。** macOS / Linux では動作しません。
+Marketplace にも Windows (win32-x64) 向けのプラットフォーム限定パッケージとして公開しています。
+
 ## インストール
 
 1. `.vsix` を受け取ったフォルダで:
@@ -28,6 +33,8 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
    `bisan.pybp` が出れば OK です。
 
 ### 必要なもの
+
+**OS: Windows のみ。**
 
 **Python 3.9 以上**（3.9 〜 3.13 で動作します）。
 

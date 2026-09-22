@@ -1,3 +1,9 @@
+"""
+メモ
+vsixの際build：vsce package
+
+"""
+
 import matplotlib.pyplot as plt
 import numpy as np
 
