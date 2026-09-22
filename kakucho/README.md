@@ -29,6 +29,8 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
 
 ### 必要なもの
 
+**Python 3.9 以上**（3.9 〜 3.13 で動作します）。
+
 使う Python に以下が入っている必要があります。
 
 | パッケージ | 用途 |
@@ -47,6 +49,9 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
 ```
 python -m pip install ipython ipdb matplotlib tornado
 ```
+
+Python 3.9 の場合、pip が自動的にその版に対応するバージョン
+（ipython 8.18 系 / matplotlib 3.9 系）を選びます。バージョン指定は不要です。
 
 **`pybp` パッケージ本体はこの拡張に同梱されています。`pip install pybp` は不要です。**
 

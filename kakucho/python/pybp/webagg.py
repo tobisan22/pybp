@@ -1,5 +1,7 @@
 """matplotlib webagg サーバーをバックグラウンドスレッドで常駐させる"""
 
+from __future__ import annotations
+
 import asyncio
 import json as _jsonmod
 import os

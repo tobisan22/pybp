@@ -28,6 +28,10 @@ pybp/                        （このフォルダ。場所は自由）
 ただし **ipython / ipdb / matplotlib / tornado は利用者の Python に必要**。不足していれば
 初回起動時に拡張が検出して、インストールするか尋ねる（`python -m pip install …` を実行）。
 
+- 対応 Python は **3.9 以上**（`pybp/pyproject.toml` の `requires-python`）
+- 3.9 では pip が ipython 8.18 系 / matplotlib 3.9 系を自動で選ぶ（各パッケージの
+  `Requires-Python` メタデータによる）ので、こちら側でのバージョン指定は不要
+
 - 使う Python は VS Code 設定 `pybp.pythonPath`（既定 `python`）で決まる
 - Marketplace 公開はしていないので、配布は .vsix を配る形になる
 - **開発時は設定 `pybp.useBundledPython` を `false` にすること。** `true` のままだと
