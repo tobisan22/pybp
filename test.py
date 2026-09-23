@@ -1,6 +1,8 @@
 """
 メモ
-vsixの際build：vsce package
+vsixの際build
+vsce package --target win32-x64
+vsce publish 0.3.0
 
 """
 
