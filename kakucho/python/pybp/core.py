@@ -6,14 +6,18 @@ pybp.core — VS Code の赤丸（ブレークポイント）で停止しつつ�
   - VsPdb           : pdb (ipdb 優先) の拡張。停止位置を JSON で通知し、
                       スクリプト終了時や標準ライブラリ内では止まらない
   - run_script      : ブレークポイントを登録して名前空間 ns でスクリプトを実行
-  - %pybp マジック   : IPython セッション内から run_script を呼ぶ
+  - run_cell        : ファイルの一部の行範囲だけを、元の行番号のまま実行
+                      （セル実行 / 選択範囲の実行 / 現在行の実行）
+  - %pybp / %pybp_cell マジック : IPython セッション内から上の 2 つを呼ぶ
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sys
+import textwrap
 import traceback
 from bdb import BdbQuit
 from pathlib import Path
@@ -32,6 +36,7 @@ SESSION_NAME = "py_session.json"  # Python → 拡張 : IPython セッション�
 
 # この中のモジュールでは絶対に停止しない（ステップインでも潜らない）
 SKIP = [
+    "pybp.core",  # セル実行はこのモジュールの関数を経由するので、その中では止まらない
     "runpy",
     "importlib*",
     "_frozen_importlib*",
@@ -188,28 +193,20 @@ def load_breakpoints(vscode_dir: Path | None) -> list[dict]:
     return [b for b in raw if b.get("enabled", True)]
 
 
-def run_script(script: Path, ns: dict) -> None:
-    """VS Code の赤丸で停止しつつ、名前空間 ns でスクリプトを実行する"""
-    script = script.resolve()
-    if not script.exists():
-        print(f"pybp: file not found: {script}")
-        return
+def _execute(script: Path, vsdir, run) -> None:
+    """赤丸を仕込んだデバッガの下で run() を実行する（スクリプト実行・セル実行の共通部）
 
-    vsdir = find_vscode_dir(script.parent)
-
+    赤丸が1つも無ければトレースを一切入れない。例外は事後デバッグに渡し、
+    終わったら停止状態と figure 一覧を拡張へ通知する。
+    """
     dbg = VsPdb(script, vsdir)
     dbg.sync_breakpoints(force=True)
-    bps = dbg.breaks  # {filename: [lines]}
-
-    ns["__file__"] = str(script)
-    ns.setdefault("__name__", "__main__")
-    code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 
     try:
-        if bps:
-            dbg.runcall(exec, code, ns)
+        if dbg.breaks:  # {filename: [lines]}
+            dbg.runcall(run)
         else:
-            exec(code, ns)
+            run()
     except (SystemExit, BdbQuit):
         pass
     except BaseException:
@@ -221,7 +218,86 @@ def run_script(script: Path, ns: dict) -> None:
         notify_figures(vsdir)
 
 
-# ---- IPython 拡張: %pybp マジック --------------------------------------------
+def run_script(script: Path, ns: dict) -> None:
+    """VS Code の赤丸で停止しつつ、名前空間 ns でスクリプトを実行する"""
+    script = script.resolve()
+    if not script.exists():
+        print(f"pybp: file not found: {script}")
+        return
+
+    vsdir = find_vscode_dir(script.parent)
+
+    ns["__file__"] = str(script)
+    ns.setdefault("__name__", "__main__")
+    code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
+
+    _execute(script, vsdir, lambda: exec(code, ns))
+
+
+# ---- セル実行（# %% 区切り / 選択範囲 / 現在行） --------------------------------
+
+
+def compile_range(src: str, start: int, filename: str):
+    """行範囲のソースを「本体」と「末尾の式」に分けてコンパイルする。
+
+    - 先頭に空行を詰めて、コード中の行番号をファイル上の行番号に合わせる。
+      こうしないと赤丸もトレースバックもエディタの行とずれる
+    - 末尾が式なら切り離して eval 用にする。IPython のセルと同じく、
+      最後の式の値を Out[n] として表示するため
+    - `for` の中だけを選んで実行したときのように、範囲全体が字下げされている
+      場合に備え、IndentationError のときだけ字下げを外して作り直す
+    """
+    pad = "\n" * (start - 1)
+    try:
+        mod = ast.parse(pad + src, filename, "exec")
+    except IndentationError:
+        mod = ast.parse(pad + textwrap.dedent(src), filename, "exec")
+
+    tail = None
+    if mod.body and isinstance(mod.body[-1], ast.Expr):
+        expr = mod.body.pop()
+        tail = compile(ast.Expression(expr.value), filename, "eval")
+    return compile(mod, filename, "exec"), tail
+
+
+def run_cell(script: Path, start: int, end: int, ns: dict) -> None:
+    """script の start..end 行（1 始まり・両端含む）だけを ns で実行する。
+
+    セル実行・選択範囲の実行・現在行の実行はすべてここを通る。
+    ファイルは拡張側が保存済みで、行番号はそのファイル上の番号。
+    """
+    script = script.resolve()
+    if not script.exists():
+        print(f"pybp: file not found: {script}")
+        return
+
+    lines = script.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = max(1, start)
+    end = min(len(lines), end)
+    if start > end:
+        return
+    src = "".join(lines[start - 1 : end])
+    if not src.strip():
+        return
+
+    try:
+        code, tail = compile_range(src, start, str(script))
+    except SyntaxError as e:
+        print("".join(traceback.format_exception_only(type(e), e)), end="")
+        return
+
+    ns["__file__"] = str(script)
+    ns.setdefault("__name__", "__main__")
+
+    def run():
+        exec(code, ns)
+        if tail is not None:
+            sys.displayhook(eval(tail, ns))  # 末尾の式は Out[n] として表示
+
+    _execute(script, find_vscode_dir(script.parent), run)
+
+
+# ---- IPython 拡張: %pybp / %pybp_cell マジック ---------------------------------
 from IPython.core.magic import Magics, line_magic, magics_class
 
 
@@ -235,6 +311,18 @@ class PybpMagics(Magics):
             print("usage: %pybp script.py")
             return
         run_script(Path(path), self.shell.user_ns)
+
+    @line_magic
+    def pybp_cell(self, line: str):
+        """%pybp_cell script.py START END — その行範囲だけを現在の名前空間で実行"""
+        try:
+            head, start, end = line.strip().rsplit(None, 2)
+            span = (int(start), int(end))
+        except ValueError:
+            print("usage: %pybp_cell script.py START END")
+            return
+        path = head.strip().strip('"').strip("'")
+        run_cell(Path(path), span[0], span[1], self.shell.user_ns)
 
 
 def load_ipython_extension(ip):

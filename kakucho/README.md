@@ -86,6 +86,9 @@ Python 3.9 の場合、pip が自動的にその版に対応するバージョ�
 | キー | 状態 | 動作 |
 |---|---|---|
 | **F5** | 通常 | 初回: セッション起動 + 実行 / 2回目以降: **同じセッションで再実行** |
+| **Ctrl+Enter** | 通常 | カーソルのある**セルを実行** |
+| **Shift+Enter** | 通常 | セルを実行して**次のセルへ進む** |
+| **Ctrl+Shift+Enter** | 通常 | **選択範囲**（選択が無ければ**現在行**）を実行 |
 | **F5** | 停止中 | 続行 (`c`) |
 | **F10** | 停止中 | ステップオーバー (`n`) |
 | **F11** | 停止中 | ステップイン (`s`) |
@@ -98,6 +101,52 @@ Python 3.9 の場合、pip が自動的にその版に対応するバージョ�
 すべて `Ctrl+Shift+P` のコマンドパレットから `PyBP:` で呼ぶこともできます。
 
 F5 を押すとファイルは自動保存されてから実行されます。
+
+### セル実行（`# %%`）
+
+MATLAB のセクション（`%%`）と同じ感覚で、スクリプトの一部だけを繰り返し実行できます。
+コメント行 `# %%`（`#%%` でも可）を書くと、そこがセルの区切りになります。
+
+```python
+# %% データの準備
+import numpy as np
+x = np.linspace(0, 10, 100)
+
+# %% ここだけ何度も試す
+y = np.sin(x * 2)
+y.max()
+```
+
+- **Ctrl+Enter** でカーソルのあるセルだけを実行します。上のセルで作った変数はそのまま残っているので、
+  重い前処理を一度だけ走らせて、下のセルを何度も書き換えながら試せます
+- **Shift+Enter** は実行してから次のセルへ進みます。上から順に試すときはこれを押し続けてください
+- **Ctrl+Shift+Enter** は選択範囲（何も選んでいなければカーソル行）を実行します。
+  `for` の中身のように字下げされた部分だけを選んでも実行できます
+- セルの**最後が式なら、その値が `Out[n]` に表示されます**（`y.max()` の行など）
+- **赤丸はセル実行でも効きます。** 例外が起きた行で止まるのも F5 と同じです
+- 区切り行には線が引かれ、カーソルのあるセルが薄く強調されます。左端の折りたたみでセル単位に畳めます
+  （`pybp.showCellDecorations` で切り替え）
+- セッションがまだ無ければ、セル実行がそのままセッションの起動も兼ねます
+- ファイルは実行前に自動保存されます（Python 側がファイルを読み直すため）
+
+- セル区切りが 1 つも無いファイルでは、全体が 1 セルです（Ctrl+Enter は F5 と同じ範囲を実行します）
+
+> **Jupyter 拡張を入れていると Ctrl+Enter / Shift+Enter を取られます。**
+> Jupyter / Python 拡張も同じキーを使っており、拡張どうしの優先順位は選べないため、
+> そのままではインタラクティブウィンドウが開くことがあります。
+> `Ctrl+Shift+P` →「**PyBP: Use PyBP Cell Keys**」を実行すると、あなたのキー設定
+> （`keybindings.json`。拡張の割り当てより必ず優先されます）に PyBP の割り当てを追加します。
+> Jupyter 拡張が入っていれば、初回起動時にも確認のメッセージが出ます。
+> 手で書く場合は次の 3 行です。
+>
+> ```json
+> { "key": "ctrl+enter",       "command": "pybp.runCell",           "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+> { "key": "shift+enter",      "command": "pybp.runCellAndAdvance", "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+> { "key": "ctrl+shift+enter", "command": "pybp.runSelection",      "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" }
+> ```
+
+> **Ctrl+Enter は VS Code 標準の「下に行を挿入」を Python ファイル上で置き換えます。**
+> 元の動作が必要なら、キーボードショートカット設定で `pybp.runCell` を別のキーに変えてください。
 
 ### 2回目以降が速い理由
 
@@ -163,6 +212,7 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | `pybp.useBundledPython` | `true` | 同梱の `pybp` を使う。**通常は `true` のままにしてください** |
 | `pybp.figureDisplay` | `tab` | 図の表示先。`tab`（タブを自動で開く）/ `manual`（タブだが自動で開かない）/ `window`（別ウィンドウ）/ `none`（表示しない） |
 | `pybp.windowBackend` | `auto` | `figureDisplay` が `window` のときのバックエンド。`auto` / `qt` / `tk` |
+| `pybp.showCellDecorations` | `true` | `# %%` の区切り線と、カーソルのあるセルの強調を表示する |
 | `pybp.autoOpenFigures` | `true` | 非推奨。`pybp.figureDisplay` に統合されました（`false` は `manual` と同じ） |
 
 `pybp.figureDisplay` を変えたら **Ctrl+Shift+F5** でセッションを作り直してください
@@ -185,6 +235,8 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | **`No module named 'IPython'` などで落ちる** | `pybp.pythonPath` の Python に依存が入っていません。F5 で出る［インストール］を選ぶか、`python -m pip install ipython ipdb matplotlib tornado` を実行してください |
 | **図が出ない / タブが空白** | `pybp.webaggPort`（既定 8988）が他のアプリと衝突しています。別の番号に変えてセッションを再起動（Ctrl+Shift+F5）してください。タブが空白のままならパネルの境界をドラッグしてサイズを変えると描画されます |
 | **図のコピーができない** | Windows のみ対応です。macOS / Linux では 💾 での保存を使ってください |
+| **Ctrl+Enter でインタラクティブウィンドウが開く** | Jupyter 拡張に取られています。`Ctrl+Shift+P` →「PyBP: Use PyBP Cell Keys」を実行してください（あなたのキー設定は拡張より優先されます） |
+| **Ctrl+Enter で何も起きない** | 拡張が古い可能性があります。バージョン 0.3.0 以降が入っているか確認してください（`Ctrl+Shift+X` で `pybp` を検索） |
 | **セッションがおかしくなった** | **Ctrl+Shift+F5** でセッションを作り直してください。それでも駄目ならターミナル「PyBP」を閉じてから F5 |
 
 原因が分からないときは、ワークスペースの `.vscode/py_ext_log.txt` に拡張側の動作ログが残っています

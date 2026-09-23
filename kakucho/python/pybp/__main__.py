@@ -1,8 +1,10 @@
 """
-python -m pybp [script.py]
+python -m pybp [script.py] [--cell START END]
 
-IPython セッションを起動し、%pybp マジックを登録する。
+IPython セッションを起動し、%pybp / %pybp_cell マジックを登録する。
 script.py が渡されていれば起動直後にそれを実行し、終了後もセッションを維持する。
+--cell を付けると、スクリプト全体ではなくその行範囲（1 始まり・両端含む）だけを実行する。
+VS Code からセル実行したときに、セッションがまだ無い場合の起動で使われる。
 
 環境変数:
   PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline",
@@ -58,7 +60,12 @@ def resolve_backend(mpl: str) -> str:
     return "webagg"
 
 
-def startup_lines(mpl: str, port: int, script: str | Path | None) -> list[str]:
+def startup_lines(
+    mpl: str,
+    port: int,
+    script: str | Path | None,
+    cell: tuple[int, int] | None = None,
+) -> list[str]:
     """IPython の exec_lines を組む。
 
     webagg だけは %matplotlib を通さない。%matplotlib は gui 名を IPython 側の
@@ -91,13 +98,30 @@ def startup_lines(mpl: str, port: int, script: str | Path | None) -> list[str]:
     else:
         lines.append(f"%matplotlib {mpl}")
     lines += ["%load_ext autoreload", "%autoreload 2"]
-    if script:
+    if script and cell:
+        lines.append(f'%pybp_cell "{script}" {cell[0]} {cell[1]}')
+    elif script:
         lines.append(f'%pybp "{script}"')
     return lines
 
 
+def parse_args(argv: list[str]) -> tuple[Path | None, tuple[int, int] | None]:
+    """[script.py] [--cell START END] を (script, cell) に分解する"""
+    cell: tuple[int, int] | None = None
+    if "--cell" in argv:
+        i = argv.index("--cell")
+        try:
+            cell = (int(argv[i + 1]), int(argv[i + 2]))
+        except (IndexError, ValueError):
+            print("[pybp] --cell の後ろには開始行と終了行が必要です")
+            cell = None
+        argv = argv[:i] + argv[i + 3 :]
+    script = Path(argv[0]).resolve() if argv else None
+    return script, cell
+
+
 def main() -> None:
-    script = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else None
+    script, cell = parse_args(sys.argv[1:])
 
     # --- セッション生存通知（拡張側が「2回目以降は %pybp を送る」判定に使う） ---
     vsdir = find_vscode_dir(script.parent if script else Path.cwd())
@@ -112,7 +136,7 @@ def main() -> None:
     # --- IPython 設定 ---
     mpl = resolve_backend(os.environ.get("PYBP_MPL", "webagg").lower())
     port = int(os.environ.get("PYBP_PORT", "8988"))
-    exec_lines = startup_lines(mpl, port, script)
+    exec_lines = startup_lines(mpl, port, script, cell)
 
     c = Config()
     c.InteractiveShellApp.extensions = ["pybp.core"]

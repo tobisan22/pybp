@@ -2,7 +2,7 @@
   "name": "pybp",
   "displayName": "PyBP - Persistent Python Session Runner",
   "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "bisan",
   "license": "MIT",
   "icon": "pybp_icon.png",
@@ -14,6 +14,10 @@
   "contributes": {
     "commands": [
       { "command": "pybp.run",      "title": "PyBP: Run with Breakpoints", "icon": "$(debug-start)" },
+      { "command": "pybp.runCell",           "title": "PyBP: Run Cell (# %%)" },
+      { "command": "pybp.runCellAndAdvance", "title": "PyBP: Run Cell and Advance" },
+      { "command": "pybp.runSelection",      "title": "PyBP: Run Selection / Line" },
+      { "command": "pybp.useCellKeys",       "title": "PyBP: Use PyBP Cell Keys (fix Ctrl+Enter conflict)" },
       { "command": "pybp.continue", "title": "PyBP: Continue",             "icon": "$(debug-continue)" },
       { "command": "pybp.stepOver", "title": "PyBP: Step Over",            "icon": "$(debug-step-over)" },
       { "command": "pybp.stepInto", "title": "PyBP: Step Into",            "icon": "$(debug-step-into)" },
@@ -25,6 +29,9 @@
     ],
     "keybindings": [
       { "command": "pybp.run",      "key": "f5",             "when": "editorLangId == python && !pybp.stopped && !inDebugMode" },
+      { "command": "pybp.runCell",           "key": "ctrl+enter",       "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+      { "command": "pybp.runCellAndAdvance", "key": "shift+enter",      "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+      { "command": "pybp.runSelection",      "key": "ctrl+shift+enter", "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
       { "command": "pybp.continue", "key": "f5",             "when": "pybp.stopped" },
       { "command": "pybp.stepOver", "key": "f10",            "when": "pybp.stopped" },
       { "command": "pybp.stepInto", "key": "f11",            "when": "pybp.stopped" },
@@ -92,6 +99,11 @@
           ],
           "default": "auto",
           "description": "pybp.figureDisplay が window のときに使う matplotlib バックエンド"
+        },
+        "pybp.showCellDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "`# %%` の行に区切り線を引き、カーソルのあるセルを薄く強調する"
         },
         "pybp.autoOpenFigures": {
           "type": "boolean",

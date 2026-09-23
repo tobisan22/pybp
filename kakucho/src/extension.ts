@@ -3,6 +3,7 @@
  *
  *  - エディタの赤丸を .vscode/py_breakpoints.json に書き出す（Python 側が読む）
  *  - F5 で IPython セッションを起動 / 2回目以降は同セッションへ %pybp を送る
+ *  - # %% で区切ったセル / 選択範囲 / 現在行を、同セッションへ %pybp_cell で送る
  *  - Python 側が書く .vscode/py_debug_state.json を監視して停止行をハイライト
  *  - 停止中は F5/F10/F11 などを pdb コマンドとしてターミナルへ送る
  *  - Python 側が書く .vscode/py_figures.json を監視して figure ごとにタブを開く
@@ -117,6 +118,41 @@ function dumpBreakpoints() {
   fs.writeFileSync(path.join(dir, BP_NAME), JSON.stringify(bps, null, 2), "utf8");
 }
 
+// ---- セル（`# %%` / `#%%` 区切り）---------------------------------------------
+// MATLAB の %% セクションにあたるもの。Jupyter / VS Code の慣習に合わせて
+// コメント形式の `# %%` を区切りとして扱う。
+const CELL_RE = /^\s*#\s*%%/;
+
+// 区切りの走査はカーソル移動のたびに走るので、版ごとに結果を覚えておく
+const markerCache = new WeakMap<vscode.TextDocument, { version: number; marks: number[] }>();
+
+/** セル区切り行（0 始まり）の一覧 */
+function cellMarkers(doc: vscode.TextDocument): number[] {
+  const hit = markerCache.get(doc);
+  if (hit && hit.version === doc.version) { return hit.marks; }
+  const marks: number[] = [];
+  for (let i = 0; i < doc.lineCount; i++) {
+    if (CELL_RE.test(doc.lineAt(i).text)) { marks.push(i); }
+  }
+  markerCache.set(doc, { version: doc.version, marks });
+  return marks;
+}
+
+/**
+ * line（0 始まり）を含むセルの範囲を、1 始まり・両端含みで返す。
+ * 区切りが 1 つも無ければファイル全体が 1 セル。
+ */
+function cellAt(doc: vscode.TextDocument, line: number): { start: number; end: number } {
+  const marks = cellMarkers(doc);
+  let start = 0;
+  for (const m of marks) {
+    if (m > line) { break; }
+    start = m;
+  }
+  const next = marks.find(m => m > line);
+  return { start: start + 1, end: (next === undefined ? doc.lineCount - 1 : next - 1) + 1 };
+}
+
 export function activate(context: vscode.ExtensionContext) {
   // ---- 状態 ----
   let runTerminal: vscode.Terminal | undefined;
@@ -209,6 +245,36 @@ export function activate(context: vscode.ExtensionContext) {
     setStopped(false);
     applyHighlight();
     updateStatus();
+  };
+
+  // ---- セルの見た目 ----
+  // 区切り線は MATLAB のセクション線にあたる。現在セルの強調はカーソル位置に追従する。
+  const cellSeparator = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    borderWidth: "1px 0 0 0",
+    borderStyle: "solid",
+    borderColor: new vscode.ThemeColor("panel.border"),
+  });
+  const cellHighlight = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: new vscode.ThemeColor("editor.rangeHighlightBackground"),
+  });
+  context.subscriptions.push(cellSeparator, cellHighlight);
+
+  const applyCellDecorations = () => {
+    const show = config().get<boolean>("showCellDecorations", true);
+    for (const ed of vscode.window.visibleTextEditors) {
+      const marks = show && ed.document.languageId === "python"
+        ? cellMarkers(ed.document) : [];
+      // 1 行目の区切りに線を引くと画面の上端と重なるので、そこだけ引かない
+      ed.setDecorations(cellSeparator,
+        marks.filter(m => m > 0).map(m => new vscode.Range(m, 0, m, 0)));
+      // 区切りが無いファイルは「全体が 1 セル」だが、全面を塗っても意味がないので強調しない
+      const cell = marks.length > 0
+        ? cellAt(ed.document, ed.selection.active.line) : undefined;
+      ed.setDecorations(cellHighlight,
+        cell ? [new vscode.Range(cell.start - 1, 0, cell.end - 1, 0)] : []);
+    }
   };
 
   // ---- figure タブ ----
@@ -416,7 +482,9 @@ export function activate(context: vscode.ExtensionContext) {
           });
       }));
 
-  const startSession = async (scriptPath?: string) => {
+  // cell を渡すと、起動直後にスクリプト全体ではなくその行範囲だけを実行する
+  const startSession = async (
+    scriptPath?: string, cell?: { start: number; end: number }) => {
     const lp = extLogPath();
     if (lp) { try { fs.writeFileSync(lp, ""); } catch { /* ignore */ } }
     extLog("SESSION start");
@@ -479,7 +547,11 @@ export function activate(context: vscode.ExtensionContext) {
     //  - PowerShell プロファイルや conda の自動アクティベートが割り込まない
     // ターミナルへの sendText は pty 経由で IPython / ipdb の標準入力に届くので、
     // 停止中のコマンド送信や %pybp での再実行はこれまで通り動く。
-    const args = ["-m", "pybp", ...(scriptPath ? [scriptPath] : [])];
+    const args = [
+      "-m", "pybp",
+      ...(scriptPath ? [scriptPath] : []),
+      ...(scriptPath && cell ? ["--cell", String(cell.start), String(cell.end)] : []),
+    ];
     extLog(`SESSION launch ${probe.exe} ${args.join(" ")}`);
     runTerminal = vscode.window.createTerminal({
       name: "PyBP", shellPath: probe.exe, shellArgs: args, env,
@@ -491,6 +563,144 @@ export function activate(context: vscode.ExtensionContext) {
   // ---- 赤丸 ----
   dumpBreakpoints();
   context.subscriptions.push(vscode.debug.onDidChangeBreakpoints(dumpBreakpoints));
+
+  // ---- セル / 選択範囲の実行 ----
+  const pythonEditor = (): vscode.TextEditor | undefined => {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.languageId !== "python") {
+      vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
+      return undefined;
+    }
+    return ed;
+  };
+
+  /**
+   * 行範囲（1 始まり・両端含む）を現在のセッションで実行する。
+   * Python 側はファイルを読み直すので、送る前に必ず保存する。
+   * 行番号をそのまま渡すため、赤丸も例外行もエディタの行と一致する。
+   */
+  const runRange = async (doc: vscode.TextDocument, start: number, end: number) => {
+    await doc.save();
+    if (sessionAlive()) {
+      runTerminal!.show(true);
+      runTerminal!.sendText(`%pybp_cell "${doc.uri.fsPath}" ${start} ${end}`);
+    } else {
+      await startSession(doc.uri.fsPath, { start, end });   // 起動と同時にその範囲を実行
+    }
+  };
+
+  /** カーソルを移し、そこが見えるようにスクロールする */
+  const moveCursor = (ed: vscode.TextEditor, line: number) => {
+    const pos = new vscode.Position(Math.min(line, ed.document.lineCount - 1), 0);
+    ed.selection = new vscode.Selection(pos, pos);
+    ed.revealRange(new vscode.Range(pos, pos),
+      vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    applyCellDecorations();
+  };
+
+  const runCurrentCell = async (advance: boolean) => {
+    const ed = pythonEditor();
+    if (!ed) { return; }
+    const cell = cellAt(ed.document, ed.selection.active.line);
+    if (cellMarkers(ed.document).length === 0) {
+      // 区切りが無いファイルは全体が 1 セル。黙って全部走ると驚くので一言出す。
+      vscode.window.setStatusBarMessage(
+        "PyBP: セル区切り（# %%）が無いのでファイル全体を実行します", 3000);
+    }
+    await runRange(ed.document, cell.start, cell.end);
+    if (advance) { moveCursor(ed, cell.end); }   // 次のセルの先頭（= 区切り行）へ
+  };
+
+  const runSelectionOrLine = async () => {
+    const ed = pythonEditor();
+    if (!ed) { return; }
+    const sel = ed.selection;
+    if (!sel.isEmpty) {
+      // 行頭で終わる選択（行全体をドラッグした形）は、その行を含めない
+      const endLine = sel.end.character === 0 && sel.end.line > sel.start.line
+        ? sel.end.line - 1 : sel.end.line;
+      await runRange(ed.document, sel.start.line + 1, endLine + 1);
+      return;
+    }
+    await runRange(ed.document, sel.active.line + 1, sel.active.line + 1);
+    moveCursor(ed, sel.active.line + 1);   // 1 行ずつ試せるよう次の行へ
+  };
+
+  // ---- キーバインドの競合解消 ----
+  // Ctrl+Enter / Shift+Enter は Jupyter 拡張（ms-toolsai.jupyter）や Python 拡張も
+  // 使っている。拡張どうしの優先順位は選べず、後から読み込まれた方が勝つため、
+  // 何もしないとインタラクティブウィンドウが開いてしまう。
+  // ユーザーの keybindings.json は必ず拡張より優先されるので、そこに書き込む。
+  const RIVAL_EXTENSIONS = ["ms-toolsai.jupyter", "ms-python.python"];
+  const KEY_PROMPT_DONE = "pybp.keybindingPromptDone";
+  const CELL_KEY_WHEN =
+    "editorTextFocus && editorLangId == python"
+    + " && !pybp.stopped && !inDebugMode && !suggestWidgetVisible";
+  const CELL_KEY_RULES = [
+    { key: "ctrl+enter", command: "pybp.runCell", when: CELL_KEY_WHEN },
+    { key: "shift+enter", command: "pybp.runCellAndAdvance", when: CELL_KEY_WHEN },
+    { key: "ctrl+shift+enter", command: "pybp.runSelection", when: CELL_KEY_WHEN },
+  ];
+
+  const keyRulesText = () =>
+    CELL_KEY_RULES.map(r => "  " + JSON.stringify(r)).join(",\n");
+
+  const installCellKeybindings = async () => {
+    await vscode.commands.executeCommand("workbench.action.openGlobalKeybindingsFile");
+    // コマンドの完了とエディタの切り替えは同期しないので、開き終わるまで少し待つ
+    const isKeybindings = (e?: vscode.TextEditor) =>
+      !!e && path.basename(e.document.uri.fsPath) === "keybindings.json";
+    let ed = vscode.window.activeTextEditor;
+    for (let i = 0; i < 20 && !isKeybindings(ed); i++) {
+      await new Promise(r => setTimeout(r, 50));
+      ed = vscode.window.activeTextEditor;
+    }
+    const doc = ed?.document;
+    if (!ed || !doc || !isKeybindings(ed)) {
+      await vscode.env.clipboard.writeText(keyRulesText());
+      vscode.window.showWarningMessage(
+        "PyBP: keybindings.json を開けませんでした。設定をクリップボードにコピーしたので、"
+        + "「基本設定: キーボードショートカット (JSON)」を開いて貼り付けてください");
+      return;
+    }
+    const text = doc.getText();
+    if (text.includes("pybp.runCell")) {
+      vscode.window.showInformationMessage("PyBP: セル実行のキー設定は既に追加されています");
+      return;
+    }
+    const close = text.lastIndexOf("]");
+    if (close < 0) {
+      await vscode.env.clipboard.writeText(keyRulesText());
+      vscode.window.showWarningMessage(
+        "PyBP: keybindings.json の形が想定と違うため自動で追加できませんでした。"
+        + "設定をクリップボードにコピーしたので、[ ] の中に貼り付けてください");
+      return;
+    }
+    // 直前の要素があればカンマで続ける（コメントは判定から外す）
+    const before = text.slice(0, close)
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const snippet = (/[}\]]\s*$/.test(before) ? ",\n" : "\n") + keyRulesText() + "\n";
+    await ed.edit(b => b.insert(doc.positionAt(close), snippet));
+    await doc.save();
+    vscode.window.showInformationMessage(
+      "PyBP: Ctrl+Enter / Shift+Enter / Ctrl+Shift+Enter を PyBP のセル実行に割り当てました");
+  };
+
+  /** Jupyter / Python 拡張が入っていれば、最初の1回だけ割り当てを提案する */
+  const offerCellKeybindings = async () => {
+    if (context.globalState.get<boolean>(KEY_PROMPT_DONE)) { return; }
+    if (!RIVAL_EXTENSIONS.some(id => vscode.extensions.getExtension(id))) { return; }
+    const pick = await vscode.window.showInformationMessage(
+      "PyBP: Ctrl+Enter / Shift+Enter は Jupyter 拡張にも割り当てられていて、"
+      + "そのままだとインタラクティブウィンドウが開きます。PyBP のセル実行を優先しますか？",
+      "PyBP を優先", "あとで", "今後表示しない");
+    if (pick === "PyBP を優先") {
+      await installCellKeybindings();
+      await context.globalState.update(KEY_PROMPT_DONE, true);
+    } else if (pick === "今後表示しない") {
+      await context.globalState.update(KEY_PROMPT_DONE, true);
+    }
+  };
 
   // ---- コマンド: 実行系 ----
   context.subscriptions.push(
@@ -508,6 +718,11 @@ export function activate(context: vscode.ExtensionContext) {
         await startSession(doc.uri.fsPath);                    // 新規セッション
       }
     }),
+
+    vscode.commands.registerCommand("pybp.runCell", () => runCurrentCell(false)),
+    vscode.commands.registerCommand("pybp.runCellAndAdvance", () => runCurrentCell(true)),
+    vscode.commands.registerCommand("pybp.runSelection", runSelectionOrLine),
+    vscode.commands.registerCommand("pybp.useCellKeys", installCellKeybindings),
 
     vscode.commands.registerCommand("pybp.restart", async () => {
       const doc = vscode.window.activeTextEditor?.document;
@@ -636,6 +851,29 @@ export function activate(context: vscode.ExtensionContext) {
   saveWatcher.onDidChange(handleSaveRequest);
   context.subscriptions.push(saveWatcher);
 
+  // ---- セルの折りたたみ ----
+  // インデントによる既定の折りたたみと併存する（VS Code が両方をマージする）
+  context.subscriptions.push(
+    vscode.languages.registerFoldingRangeProvider({ language: "python" }, {
+      provideFoldingRanges(doc) {
+        const marks = cellMarkers(doc);
+        return marks
+          .map((m, i) => new vscode.FoldingRange(
+            m,
+            i + 1 < marks.length ? marks[i + 1] - 1 : doc.lineCount - 1,
+            vscode.FoldingRangeKind.Region))
+          .filter(r => r.end > r.start);
+      },
+    }),
+    vscode.window.onDidChangeActiveTextEditor(applyCellDecorations),
+    vscode.window.onDidChangeVisibleTextEditors(applyCellDecorations),
+    vscode.window.onDidChangeTextEditorSelection(applyCellDecorations),
+    vscode.workspace.onDidChangeTextDocument(applyCellDecorations),
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration("pybp.showCellDecorations")) { applyCellDecorations(); }
+    }),
+  );
+
   // ---- 設定変更への追従 ----
   // バックエンドはセッション起動時に決まるので、走っている間は作り直さないと変わらない。
   context.subscriptions.push(
@@ -657,6 +895,8 @@ export function activate(context: vscode.ExtensionContext) {
   setStopped(false);
   updateFigureTabsContext();
   updateStatus();
+  applyCellDecorations();
+  void offerCellKeybindings();
 }
 
 export function deactivate() {}

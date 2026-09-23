@@ -96,6 +96,9 @@ cd <このフォルダ>
 | キー | 状態 | 動作 |
 |---|---|---|
 | F5 | 通常 | 初回: IPython セッション起動 + 実行 / 2回目以降: 同セッションで再実行 |
+| Ctrl+Enter | 通常 | カーソルのあるセル（`# %%` 区切り）を実行 |
+| Shift+Enter | 通常 | セルを実行して次のセルへ進む |
+| Ctrl+Shift+Enter | 通常 | 選択範囲（無ければ現在行）を実行 |
 | F5 | 停止中 | 続行 (`c`) |
 | F10 | 停止中 | ステップオーバー (`n`) |
 | F11 / Shift+F11 | 停止中 | ステップイン (`s`) / ステップアウト (`r`) |
@@ -109,6 +112,14 @@ cd <このフォルダ>
 - ツールバーの **保存**（フロッピー）は VS Code の保存ダイアログを開く。形式は隣のドロップダウン（png / svg / pdf など）に従う
   - webview は `window.open` とダウンロードをブロックするため、matplotlib 標準の保存は無反応になる。そこで押下をサーバー経由で拡張に渡し、拡張側で保存している
   - この経路は VS Code の拡張が動いていることが前提。ブラウザで `http://127.0.0.1:8988/1` を直接開いた場合は保存が効かない
+- Ctrl+Enter / Shift+Enter は Jupyter 拡張・Python 拡張とぶつかる。拡張どうしの優先順位は指定できず
+  （後から読み込まれた方が勝つ）、ユーザーの `keybindings.json` だけが確実に拡張より優先される。
+  そのため `PyBP: Use PyBP Cell Keys`（`pybp.useCellKeys`）でユーザー設定へ書き込む方式にしている。
+  Jupyter 拡張が入っていれば起動時に一度だけ確認を出す（`globalState` の `pybp.keybindingPromptDone` で抑止）
+- `# %%` でセルに区切ると、Ctrl+Enter でそのセルだけを実行できる（MATLAB のセクション実行）。
+  区切りが無いファイルは全体が 1 セル。
+  拡張は `%pybp_cell "file" 開始行 終了行` を送り、Python 側は先頭に空行を詰めて行番号を合わせたうえで実行する。
+  行番号が一致しているので赤丸も例外行もそのまま効く。セル末尾が式ならその値が `Out[n]` に出る
 - 実行が終わってもセッションは生きている。IPython プロンプトでそのまま変数を確認・追加計算できる（MATLAB のコマンドウィンドウと同じ使い心地）
 - matplotlib の figure は webagg バックエンドでノンブロッキング表示され、figure ごとに VS Code のタブが開く。実行後も残る
 - `%reset` でワークスペースをクリア、`plt.close("all")` で figure を全閉
@@ -125,6 +136,7 @@ cd <このフォルダ>
   - `window` … Qt / Tk の別ウィンドウ。webagg サーバーは起動しない
   - `none` … 表示しない。webagg サーバーもポートも使わない（Agg。`savefig` は使える）
 - VS Code 設定 `pybp.windowBackend` : `figureDisplay: window` のバックエンド（`auto` / `qt` / `tk`、既定 `auto`）
+- VS Code 設定 `pybp.showCellDecorations` : `# %%` の区切り線と現在セルの強調（既定 `true`）
 - VS Code 設定 `pybp.autoOpenFigures` : **非推奨**。`figureDisplay` に統合（`false` = `manual`）
 - 環境変数 `PYBP_MPL` : matplotlib バックエンド（既定 `webagg`。`qt` / `tk` / `inline` / `none` / `auto`）。
   ターミナルから `python -m pybp` を直接叩く時用。VS Code から起動した場合は

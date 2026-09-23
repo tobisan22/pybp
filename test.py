@@ -11,8 +11,8 @@ plt.rcParams["axes.grid"] = True
 
 x = np.linspace(0, 10, 100)
 
-
-for i in range(1, 4):
+# %%
+for i in range(1, 5):
     y = np.sin(x * i)
 
     fig, ax = plt.subplots(clear=True, num=i)
@@ -21,3 +21,5 @@ for i in range(1, 4):
     ax.plot(x, y, label="sin(x)")
 
     plt.show()
+
+# %%
