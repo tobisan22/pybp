@@ -4,6 +4,7 @@
 .vscode/py_*
 *.bundle
 Claude outputs/*
+*.vsix
 
 # Python
 __pycache__/

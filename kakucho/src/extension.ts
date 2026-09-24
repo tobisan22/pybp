@@ -562,8 +562,11 @@ export function activate(context: vscode.ExtensionContext) {
       ...(scriptPath && cell ? ["--cell", String(cell.start), String(cell.end)] : []),
     ];
     extLog(`SESSION launch ${probe.exe} ${args.join(" ")}`);
+    // isTransient: VS Code のターミナル永続化（terminal.integrated.enablePersistentSessions）
+    // の対象から外す。外さないと、ウィンドウを閉じて開き直したときに VS Code が
+    // 同じ shellPath / shellArgs でターミナルを復元し、前回のスクリプトが勝手に走る。
     runTerminal = vscode.window.createTerminal({
-      name: "PyBP", shellPath: probe.exe, shellArgs: args, env,
+      name: "PyBP", shellPath: probe.exe, shellArgs: args, env, isTransient: true,
     });
     runTerminal.show(true);
     updateStatus();

@@ -2,7 +2,7 @@
   "name": "pybp",
   "displayName": "PyBP - Persistent Python Session Runner",
   "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "bisan",
   "license": "MIT",
   "icon": "pybp_icon.png",
