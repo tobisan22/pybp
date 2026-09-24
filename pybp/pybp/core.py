@@ -15,6 +15,7 @@ pybp.core — VS Code の赤丸（ブレークポイント）で停止しつつ�
 from __future__ import annotations
 
 import ast
+import fnmatch
 import json
 import os
 import sys
@@ -61,6 +62,12 @@ session_vscode_dir: Path | None = None
 # セッション生存通知ファイル（busy フラグも持つ）。python -m pybp が設定する
 session_file: Path | None = None
 
+# 直前のエラー（F5 / セル実行ではエラーで止まらないので、後から %pybp_pm で入れるよう取っておく）
+#   _last_error : (script, vscode_dir, traceback)。次の実行が始まると消える
+#   error_info  : 拡張への通知用 {"type": ..., "where": "file.py:12"}（ステータスバーの ⚠）
+_last_error: tuple | None = None
+error_info: dict | None = None
+
 
 def out_dir(vscode_dir: Path | None) -> Path | None:
     """拡張へ通知するファイルの書き出し先。セッション専用ディレクトリがあればそちら"""
@@ -72,7 +79,7 @@ def write_session(busy: bool) -> None:
     選ぶのに使う（実行中のセッションへは送らず、別のセッションで実行する）"""
     if session_file is None:
         return
-    data = json.dumps({"pid": os.getpid(), "busy": busy})
+    data = json.dumps({"pid": os.getpid(), "busy": busy, "error": error_info})
     tmp = session_file.with_name(session_file.name + ".tmp")
     try:
         tmp.write_text(data, encoding="utf-8")
@@ -279,12 +286,36 @@ def load_breakpoints(vscode_dir: Path | None) -> list[dict]:
     return [b for b in raw if b.get("enabled", True)]
 
 
-def _execute(script: Path, vsdir, run) -> None:
+def _user_frame_where(tb) -> str | None:
+    """トレースバックの中で最も深いユーザーコードの「ファイル名:行」"""
+    where = None
+    for frame, lineno in traceback.walk_tb(tb):
+        name = frame.f_globals.get("__name__", "")
+        if not any(fnmatch.fnmatch(name, pat) for pat in SKIP):
+            where = f"{Path(frame.f_code.co_filename).name}:{lineno}"
+    return where
+
+
+def _remember_error(script: Path, vsdir, etype, evalue, tb) -> None:
+    """%pybp_pm と IPython の %debug が使えるよう、直前のエラーを取っておく"""
+    global _last_error, error_info
+    _last_error = (script, vsdir, tb)
+    error_info = {"type": etype.__name__, "where": _user_frame_where(tb)}
+    sys.last_type, sys.last_value, sys.last_traceback = etype, evalue, tb
+    if sys.version_info >= (3, 12):
+        sys.last_exc = evalue
+
+
+def _execute(script: Path, vsdir, run, post_mortem: bool = False) -> None:
     """赤丸を仕込んだデバッガの下で run() を実行する（スクリプト実行・セル実行の共通部）
 
-    赤丸が1つも無ければトレースを一切入れない。例外は事後デバッグに渡し、
+    赤丸が1つも無ければトレースを一切入れない。例外はトレースバックを出して取っておき、
+    post_mortem=True（Alt+F5）のときだけその場で事後デバッグに入る。
+    それ以外（F5 / セル実行）は止まらず、後から %pybp_pm で入れる。
     終わったら停止状態と figure 一覧を拡張へ通知する。
     """
+    global _last_error, error_info
+    _last_error = error_info = None  # 前のエラーは、次の実行を始めた時点で見られなくなる
     out = out_dir(vsdir)
     dbg = VsPdb(script, vsdir, out)
     dbg.sync_breakpoints(force=True)
@@ -298,14 +329,44 @@ def _execute(script: Path, vsdir, run) -> None:
         pass
     except BaseException:
         traceback.print_exc()
-        dbg.interaction(None, sys.exc_info()[2])
+        etype, evalue, tb = sys.exc_info()
+        _remember_error(script, vsdir, etype, evalue, tb)
+        if post_mortem:
+            dbg.reset()  # 赤丸なし（runcall を通っていない）でも q で抜けられるように
+            dbg.interaction(None, tb)
+        else:
+            print(
+                "[pybp] エラーの行で止まるには PyBP: Debug Last Error"
+                "（ステータスバーの ⚠ / %pybp_pm）",
+                file=sys.stderr,
+            )
     finally:
         dbg._clear_state()
         dbg.clear_all_breaks()
         notify_figures(out)
 
 
-def run_script(script: Path, ns: dict) -> None:
+def post_mortem_last() -> None:
+    """直前のエラーの位置で事後デバッグに入る（%pybp_pm）。停止行のハイライトと
+    ワークスペースビューは、実行中に止まったときと同じように動く"""
+    if _last_error is None:
+        print(
+            "[pybp] 直前のエラーがありません（実行し直すと消えます。"
+            "プロンプトで打った行のエラーは %debug）"
+        )
+        return
+    script, vsdir, tb = _last_error
+    dbg = VsPdb(script, vsdir, out_dir(vsdir))
+    dbg.reset()  # pdb.post_mortem と同じく、対話の前に初期化する（q で抜けるのに必要）
+    try:
+        dbg.interaction(None, tb)
+    except BdbQuit:
+        pass
+    finally:
+        dbg._clear_state()
+
+
+def run_script(script: Path, ns: dict, post_mortem: bool = False) -> None:
     """VS Code の赤丸で停止しつつ、名前空間 ns でスクリプトを実行する"""
     script = script.resolve()
     if not script.exists():
@@ -318,7 +379,7 @@ def run_script(script: Path, ns: dict) -> None:
     ns.setdefault("__name__", "__main__")
     code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 
-    _execute(script, vsdir, lambda: exec(code, ns))
+    _execute(script, vsdir, lambda: exec(code, ns), post_mortem)
 
 
 # ---- セル実行（# %% 区切り / 選択範囲 / 現在行） --------------------------------
@@ -347,7 +408,9 @@ def compile_range(src: str, start: int, filename: str):
     return compile(mod, filename, "exec"), tail
 
 
-def run_cell(script: Path, start: int, end: int, ns: dict) -> None:
+def run_cell(
+    script: Path, start: int, end: int, ns: dict, post_mortem: bool = False
+) -> None:
     """script の start..end 行（1 始まり・両端含む）だけを ns で実行する。
 
     セル実行・選択範囲の実行・現在行の実行はすべてここを通る。
@@ -381,35 +444,51 @@ def run_cell(script: Path, start: int, end: int, ns: dict) -> None:
         if tail is not None:
             sys.displayhook(eval(tail, ns))  # 末尾の式は Out[n] として表示
 
-    _execute(script, find_vscode_dir(script.parent), run)
+    _execute(script, find_vscode_dir(script.parent), run, post_mortem)
 
 
 # ---- IPython 拡張: %pybp / %pybp_cell マジック ---------------------------------
 from IPython.core.magic import Magics, line_magic, magics_class
 
 
+def split_pm(line: str) -> tuple[bool, str]:
+    """先頭の --pm（エラーで止まる）を取り出す"""
+    line = line.strip()
+    if line == "--pm" or line.startswith("--pm "):
+        return True, line[4:].strip()
+    return False, line
+
+
 @magics_class
 class PybpMagics(Magics):
     @line_magic
     def pybp(self, line: str):
-        """%pybp script.py — 赤丸で停止しつつ、現在の名前空間でスクリプトを実行"""
-        path = line.strip().strip('"').strip("'")
+        """%pybp [--pm] script.py — 赤丸で停止しつつ、現在の名前空間でスクリプトを実行。
+        --pm を付けるとエラーの行で止まる（事後デバッグ）"""
+        pm, rest = split_pm(line)
+        path = rest.strip('"').strip("'")
         if not path:
-            print("usage: %pybp script.py")
+            print("usage: %pybp [--pm] script.py")
             return
-        run_script(Path(path), self.shell.user_ns)
+        run_script(Path(path), self.shell.user_ns, post_mortem=pm)
 
     @line_magic
     def pybp_cell(self, line: str):
-        """%pybp_cell script.py START END — その行範囲だけを現在の名前空間で実行"""
+        """%pybp_cell [--pm] script.py START END — その行範囲だけを現在の名前空間で実行"""
+        pm, rest = split_pm(line)
         try:
-            head, start, end = line.strip().rsplit(None, 2)
+            head, start, end = rest.rsplit(None, 2)
             span = (int(start), int(end))
         except ValueError:
-            print("usage: %pybp_cell script.py START END")
+            print("usage: %pybp_cell [--pm] script.py START END")
             return
         path = head.strip().strip('"').strip("'")
-        run_cell(Path(path), span[0], span[1], self.shell.user_ns)
+        run_cell(Path(path), span[0], span[1], self.shell.user_ns, post_mortem=pm)
+
+    @line_magic
+    def pybp_pm(self, line: str):
+        """%pybp_pm — 直前の %pybp / %pybp_cell のエラーの行で事後デバッグに入る"""
+        post_mortem_last()
 
 
 def load_ipython_extension(ip):

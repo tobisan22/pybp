@@ -109,9 +109,9 @@ def test_breakpoint_outside_the_range_is_ignored(sample, stops):
 
 def test_exception_keeps_file_line_numbers(sample, stops, capsys):
     sample.write_text("x = 1\ny = 0\nx / y\n", encoding="utf-8")
-    core.run_cell(sample, 3, 3, {})
+    core.run_cell(sample, 3, 3, {}, post_mortem=True)
     assert "line 3" in capsys.readouterr().err
-    assert stops == [("<postmortem>", None)], "例外は事後デバッグへ渡す"
+    assert stops == [("<postmortem>", None)], "post_mortem=True なら例外は事後デバッグへ渡す"
 
 
 def test_indented_range_can_be_run_alone(sample):

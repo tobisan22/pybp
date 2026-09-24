@@ -16,6 +16,12 @@
  *  - F5 / セル実行は「アクティブなセッション」へ送る。そこがコード実行中なら、
  *    空いている別セッション、それも無ければ新しいセッションで実行する
  *  - ターミナルを切り替えると、そのセッションがアクティブになる（ワークスペースビューも追従）
+ *
+ * エラー時の停止:
+ *  - F5 / セル実行はエラーで止まらない（トレースバックだけ出す）。Python がエラーを
+ *    py_session.json で知らせてくるので、ステータスバーに ⚠ を出し、押すと %pybp_pm で
+ *    その行に入る（PyBP: Debug Last Error）
+ *  - Alt+F5（PyBP: Run (Stop on Error)）は、その場でエラーの行に止まる（--pm）
  */
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -174,8 +180,10 @@ export function activate(context: vscode.ExtensionContext) {
     stopped?: Stop;                                // ブレークポイントで停止中の位置
     figures: Map<number, vscode.WebviewPanel>;     // figure 番号 → タブ
     ws: WsData | null;                             // 最後に受け取った変数一覧
+    error?: ErrInfo;                               // 直前の実行のエラー（次の実行で消える）
     lastUsed: number;
   }
+  type ErrInfo = { type: string; where: string | null };
   const sessions = new Map<number, Session>();
   let activeId: number | undefined;
   let activeFigure: { sid: number; num: number } | undefined;   // 最後にフォーカスされた figure
@@ -188,6 +196,13 @@ export function activate(context: vscode.ExtensionContext) {
   const byUri = (uri: vscode.Uri) => {
     const dir = path.dirname(uri.fsPath).toLowerCase();
     return [...sessions.values()].find(s => s.dir.toLowerCase() === dir);
+  };
+  /** 直前のエラーに入れるセッション。アクティブなものを優先し、無ければ直近に使ったもの */
+  const errorSession = (): Session | undefined => {
+    const a = active();
+    if (a?.error) { return a; }
+    return [...sessions.values()].filter(s => s.error)
+      .sort((x, y) => y.lastUsed - x.lastUsed)[0];
   };
 
   // ---- ワークスペースビュー ----
@@ -235,7 +250,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- ステータスバー ----
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  context.subscriptions.push(status);
+  // 直前の実行がエラーで終わったセッションがあれば、そこへ入るボタンを出す
+  const errStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  errStatus.command = "pybp.debugLastError";
+  errStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+  context.subscriptions.push(status, errStatus);
 
   const updateStatus = () => {
     const a = active();
@@ -254,6 +273,16 @@ export function activate(context: vscode.ExtensionContext) {
       status.show();
     } else {
       status.hide();
+    }
+    const e = errorSession();
+    if (e && !e.stopped) {
+      const where = e.error!.where ? ` (${e.error!.where})` : "";
+      errStatus.text = `$(warning) ${e.error!.type}${where}`;
+      errStatus.tooltip = `${sessions.size > 1 ? e.name + ": " : ""}`
+        + "エラーで終了しました。クリックでエラーの行に入ります（PyBP: Debug Last Error）";
+      errStatus.show();
+    } else {
+      errStatus.hide();
     }
   };
 
@@ -431,7 +460,8 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   // ---- セッション ----
-  const readSession = (s: Session): { pid: number; busy?: boolean } | undefined => {
+  const readSession = (s: Session):
+    { pid: number; busy?: boolean; error?: ErrInfo | null } | undefined => {
     try {
       return JSON.parse(fs.readFileSync(path.join(s.dir, SESSION_NAME), "utf8"));
     } catch {
@@ -576,21 +606,21 @@ export function activate(context: vscode.ExtensionContext) {
   // セッションが押した回数だけ増えないようにする
   let starting = false;
   const startSession = async (
-    scriptPath?: string, cell?: { start: number; end: number }, id?: number) => {
+    scriptPath?: string, cell?: { start: number; end: number }, id?: number, pm = false) => {
     if (starting) {
       vscode.window.setStatusBarMessage("PyBP: セッションを起動中です", 3000);
       return;
     }
     starting = true;
     try {
-      await launchSession(scriptPath, cell, id);
+      await launchSession(scriptPath, cell, id, pm);
     } finally {
       starting = false;
     }
   };
 
   const launchSession = async (
-    scriptPath?: string, cell?: { start: number; end: number }, id?: number) => {
+    scriptPath?: string, cell?: { start: number; end: number }, id?: number, pm = false) => {
     // ほかのセッションが動いていればそのログは残す
     const lp = extLogPath();
     if (lp && sessions.size === 0) { try { fs.writeFileSync(lp, ""); } catch { /* ignore */ } }
@@ -663,6 +693,7 @@ export function activate(context: vscode.ExtensionContext) {
       "-m", "pybp",
       ...(scriptPath ? [scriptPath] : []),
       ...(scriptPath && cell ? ["--cell", String(cell.start), String(cell.end)] : []),
+      ...(scriptPath && pm ? ["--pm"] : []),
     ];
     extLog(`SESSION launch ${probe.exe} ${args.join(" ")}`);
     // isTransient: VS Code のターミナル永続化（terminal.integrated.enablePersistentSessions）
@@ -693,9 +724,12 @@ export function activate(context: vscode.ExtensionContext) {
     return [...sessions.values()].filter(canTake).sort((x, y) => y.lastUsed - x.lastUsed)[0];
   };
 
-  /** 選んだセッションへ送る。forceNew なら必ず新しいセッションで実行する */
+  /**
+   * 選んだセッションへ送る。forceNew なら必ず新しいセッションで実行する。
+   * pm（Alt+F5）ならエラーの行で止まる。F5 / セル実行は止まらない
+   */
   const dispatch = async (
-    scriptPath: string, cell?: { start: number; end: number }, forceNew = false) => {
+    scriptPath: string, cell?: { start: number; end: number }, forceNew = false, pm = false) => {
     const a = active();
     const target = forceNew ? undefined : pickSession();
     if (!forceNew && a && target !== a && isAlive(a)) {
@@ -704,14 +738,17 @@ export function activate(context: vscode.ExtensionContext) {
         + ` ${target?.name ?? "新しいセッション"} で実行します`, 4000);
     }
     if (!target) {
-      await startSession(scriptPath, cell);
+      await startSession(scriptPath, cell, undefined, pm);
       return;
     }
     setActive(target);
+    target.error = undefined;   // 実行を始めた時点で前のエラーには入れなくなる
+    updateStatus();
     target.terminal.show(true);
+    const opt = pm ? "--pm " : "";
     target.terminal.sendText(cell
-      ? `%pybp_cell "${scriptPath}" ${cell.start} ${cell.end}`
-      : `%pybp "${scriptPath}"`);
+      ? `%pybp_cell ${opt}"${scriptPath}" ${cell.start} ${cell.end}`
+      : `%pybp ${opt}"${scriptPath}"`);
   };
 
   // ---- 赤丸 ----
@@ -852,19 +889,37 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   // ---- コマンド: 実行系 ----
-  const runFile = (forceNew: boolean) => async () => {
+  const runFile = (forceNew: boolean, pm = false) => async () => {
     const doc = vscode.window.activeTextEditor?.document;
     if (!doc || doc.languageId !== "python") {
       vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
       return;
     }
     await doc.save();
-    await dispatch(doc.uri.fsPath, undefined, forceNew);
+    await dispatch(doc.uri.fsPath, undefined, forceNew, pm);
   };
 
   context.subscriptions.push(
     vscode.commands.registerCommand("pybp.run", runFile(false)),
     vscode.commands.registerCommand("pybp.runInNewSession", runFile(true)),
+    vscode.commands.registerCommand("pybp.runStopOnError", runFile(false, true)),
+
+    // 直前の実行のエラーの行に入る（F5 / セル実行はエラーで止まらないので、後から入る）
+    vscode.commands.registerCommand("pybp.debugLastError", () => {
+      const s = errorSession();
+      if (!s) {
+        vscode.window.showInformationMessage(
+          "PyBP: 直前のエラーはありません（次の実行を始めると消えます）");
+        return;
+      }
+      if (s.stopped || isBusy(s)) {
+        vscode.window.showWarningMessage(`PyBP: ${s.name} は実行中のため入れません`);
+        return;
+      }
+      setActive(s);
+      s.terminal.show(true);
+      s.terminal.sendText("%pybp_pm");
+    }),
 
     vscode.commands.registerCommand("pybp.selectSession", async () => {
       if (sessions.size === 0) {
@@ -1012,6 +1067,20 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const sessionGlob = (name: string) => `**/.vscode/${SESSIONS_DIR}/*/${name}`;
+
+  // py_session.json（busy / error）が変わったら、エラーの ⚠ を出し直す
+  const onSessionFile = (uri: vscode.Uri) => {
+    const s = byUri(uri);
+    if (!s) { return; }
+    const info = readSession(s);
+    if (!info || info.busy) { return; }   // 実行中は前のエラーを出さない（ほぼ消えている）
+    s.error = info.error ?? undefined;
+    updateStatus();
+  };
+  const sessionWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(SESSION_NAME));
+  sessionWatcher.onDidCreate(onSessionFile);
+  sessionWatcher.onDidChange(onSessionFile);
+  context.subscriptions.push(sessionWatcher);
   const stateWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(STATE_NAME));
   stateWatcher.onDidCreate(onStateChanged);
   stateWatcher.onDidChange(onStateChanged);

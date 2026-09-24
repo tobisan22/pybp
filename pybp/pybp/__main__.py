@@ -1,10 +1,11 @@
 """
-python -m pybp [script.py] [--cell START END]
+python -m pybp [script.py] [--cell START END] [--pm]
 
 IPython セッションを起動し、%pybp / %pybp_cell マジックを登録する。
 script.py が渡されていれば起動直後にそれを実行し、終了後もセッションを維持する。
 --cell を付けると、スクリプト全体ではなくその行範囲（1 始まり・両端含む）だけを実行する。
 VS Code からセル実行したときに、セッションがまだ無い場合の起動で使われる。
+--pm を付けると、その最初の実行でエラーが出たときにその行で止まる（VS Code の Alt+F5）。
 
 環境変数:
   PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline",
@@ -70,6 +71,7 @@ def startup_lines(
     port: int,
     script: str | Path | None,
     cell: tuple[int, int] | None = None,
+    post_mortem: bool = False,
 ) -> list[str]:
     """IPython の exec_lines を組む。
 
@@ -103,10 +105,11 @@ def startup_lines(
     else:
         lines.append(f"%matplotlib {mpl}")
     lines += ["%load_ext autoreload", "%autoreload 2"]
+    pm = "--pm " if post_mortem else ""
     if script and cell:
-        lines.append(f'%pybp_cell "{script}" {cell[0]} {cell[1]}')
+        lines.append(f'%pybp_cell {pm}"{script}" {cell[0]} {cell[1]}')
     elif script:
-        lines.append(f'%pybp "{script}"')
+        lines.append(f'%pybp {pm}"{script}"')
     return lines
 
 
@@ -141,7 +144,9 @@ def ipython_config(exec_lines: list[str]) -> Config:
 
 
 def main() -> None:
-    script, cell = parse_args(sys.argv[1:])
+    argv = sys.argv[1:]
+    post_mortem = "--pm" in argv  # 位置は問わない（parse_args は従来の形のまま）
+    script, cell = parse_args([a for a in argv if a != "--pm"])
 
     # --- セッション生存通知（拡張側が「2回目以降は %pybp を送る」判定に使う） ---
     vsdir = find_vscode_dir(script.parent if script else Path.cwd())
@@ -164,7 +169,7 @@ def main() -> None:
     # --- IPython 設定 ---
     mpl = resolve_backend(os.environ.get("PYBP_MPL", "webagg").lower())
     port = int(os.environ.get("PYBP_PORT", "8988"))
-    exec_lines = startup_lines(mpl, port, script, cell)
+    exec_lines = startup_lines(mpl, port, script, cell, post_mortem)
 
     c = ipython_config(exec_lines)
 

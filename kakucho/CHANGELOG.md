@@ -4,6 +4,25 @@ All notable changes to the "pybp" extension will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [0.4.3] - 2026-09-24
+
+### Changed
+
+- **F5 とセル実行（Ctrl+Enter / Shift+Enter / Ctrl+Shift+Enter）では、エラーが起きても止まらなくなりました。** トレースバックを出して IPython プロンプトに戻ります。これまでの「エラーの行で自動的に止まる」動作は Alt+F5 に移りました。赤丸で止まる動作は変わりません。
+
+### Added
+
+- **PyBP: Run (Stop on Error)**（`Alt+F5`）: 実行し、エラーが出たらその行で止まります（0.4.2 までの F5 の動作）。
+- **PyBP: Debug Last Error**: 直前の実行のエラーの行で、後から事後デバッグに入ります。走り直さずに入れるので、重い計算の後で落ちたときもその時点の変数を調べられます。
+  - エラーで終わるとステータスバーに `⚠ ZeroDivisionError (script.py:12)` のように出て、クリックで入れます
+  - IPython プロンプトから `%pybp_pm` と打っても同じです
+  - 入れるのは次の実行（F5 / セル実行）を始めるまでです
+- マジックに `--pm` オプションを追加しました（`%pybp --pm "file"`、`%pybp_cell --pm ...`、`python -m pybp --pm`）。
+
+### Fixed
+
+- 赤丸が 1 つも無いスクリプトでエラーの行に止まったとき、`q` で抜けようとすると `AttributeError: 'VsPdb' object has no attribute 'botframe'` になっていた問題を修正しました。
+
 ## [0.4.2] - 2026-09-24
 
 ### Added

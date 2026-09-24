@@ -2,7 +2,7 @@
   "name": "pybp",
   "displayName": "PyBP - Persistent Python Session Runner",
   "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "publisher": "bisan",
   "license": "MIT",
   "icon": "pybp_icon.png",
@@ -25,6 +25,8 @@
     "commands": [
       { "command": "pybp.run",      "title": "PyBP: Run with Breakpoints", "icon": "$(debug-start)" },
       { "command": "pybp.runInNewSession", "title": "PyBP: Run in New Session", "icon": "$(debug-alt)" },
+      { "command": "pybp.runStopOnError",  "title": "PyBP: Run (Stop on Error)" },
+      { "command": "pybp.debugLastError",  "title": "PyBP: Debug Last Error", "icon": "$(bug)" },
       { "command": "pybp.selectSession",   "title": "PyBP: Select Session" },
       { "command": "pybp.runCell",           "title": "PyBP: Run Cell (# %%)" },
       { "command": "pybp.runCellAndAdvance", "title": "PyBP: Run Cell and Advance" },
@@ -51,6 +53,7 @@
       { "command": "pybp.stop",     "key": "shift+f5",       "when": "pybp.stopped" },
       { "command": "pybp.restart",  "key": "ctrl+shift+f5",  "when": "editorLangId == python" },
       { "command": "pybp.runInNewSession", "key": "ctrl+alt+f5", "when": "editorLangId == python && !inDebugMode" },
+      { "command": "pybp.runStopOnError",  "key": "alt+f5",      "when": "editorLangId == python && !pybp.stopped && !inDebugMode" },
       { "command": "pybp.copyFigure", "key": "ctrl+c",       "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive" }
     ],
     "menus": {
