@@ -2,7 +2,7 @@
   "name": "pybp",
   "displayName": "PyBP - Persistent Python Session Runner",
   "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "bisan",
   "license": "MIT",
   "icon": "pybp_icon.png",
@@ -12,6 +12,16 @@
   "activationEvents": ["onLanguage:python"],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "pybp", "title": "PyBP", "icon": "media/workspace.svg" }
+      ]
+    },
+    "views": {
+      "pybp": [
+        { "type": "webview", "id": "pybp.workspace", "name": "Workspace" }
+      ]
+    },
     "commands": [
       { "command": "pybp.run",      "title": "PyBP: Run with Breakpoints", "icon": "$(debug-start)" },
       { "command": "pybp.runCell",           "title": "PyBP: Run Cell (# %%)" },

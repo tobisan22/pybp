@@ -8,6 +8,7 @@
  *  - 停止中は F5/F10/F11 などを pdb コマンドとしてターミナルへ送る
  *  - Python 側が書く .vscode/py_figures.json を監視して figure ごとにタブを開く
  *  - Figure タブの 📋 で、その figure の PNG を Windows のクリップボードへ入れる
+ *  - Python 側が書く .vscode/py_workspace.json を監視してワークスペースビューに変数を出す
  */
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -15,6 +16,7 @@ import * as os from "os";
 import * as path from "path";
 import * as http from "http";
 import { execFile } from "child_process";
+import { WORKSPACE_NAME, WorkspaceViewProvider, WsData } from "./workspaceView";
 
 const BP_NAME = "py_breakpoints.json";
 const STATE_NAME = "py_debug_state.json";
@@ -159,6 +161,11 @@ export function activate(context: vscode.ExtensionContext) {
   let current: { file: string; line: number } | undefined;
   const figurePanels = new Map<number, vscode.WebviewPanel>();   // figure 番号 → タブ
   let activeFigure: number | undefined;                          // 最後にフォーカスされた figure
+
+  // ---- ワークスペースビュー ----
+  const workspaceView = new WorkspaceViewProvider();
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(WorkspaceViewProvider.viewType, workspaceView));
 
   const config = () => vscode.workspace.getConfiguration("pybp");
 
@@ -537,7 +544,9 @@ export function activate(context: vscode.ExtensionContext) {
       removeQuiet(path.join(dir, STATE_NAME));
       removeQuiet(path.join(dir, FIGURES_NAME));
       removeQuiet(path.join(dir, SAVE_REQUEST_NAME));
+      removeQuiet(path.join(dir, WORKSPACE_NAME));
     }
+    workspaceView.update(null);
     closeAllFigurePanels();
     if (runTerminal) { runTerminal.dispose(); }
 
@@ -801,6 +810,7 @@ export function activate(context: vscode.ExtensionContext) {
         runTerminal = undefined;
         closeAllFigurePanels();
         clearStopped();
+        workspaceView.update(null);
       }
     }),
   );
@@ -844,6 +854,22 @@ export function activate(context: vscode.ExtensionContext) {
   figWatcher.onDidCreate(onFigures);
   figWatcher.onDidChange(onFigures);
   context.subscriptions.push(figWatcher);
+
+  // ---- 変数一覧の監視（ワークスペースビュー） ----
+  // Python は一時ファイルからの置き換えで書くので、読めた時点の内容は常に完全。
+  // それでも壊れていたら（手で消した等）その回は無視して次の更新を待つ。
+  const onWorkspace = async (uri: vscode.Uri) => {
+    if (!runTerminal) { return; }   // このウィンドウのセッションでなければ出さない
+    try {
+      const raw = await vscode.workspace.fs.readFile(uri);
+      workspaceView.update(JSON.parse(Buffer.from(raw).toString("utf8")) as WsData);
+    } catch { /* ignore */ }
+  };
+  const wsWatcher = vscode.workspace.createFileSystemWatcher(`**/.vscode/${WORKSPACE_NAME}`);
+  wsWatcher.onDidCreate(onWorkspace);
+  wsWatcher.onDidChange(onWorkspace);
+  wsWatcher.onDidDelete(() => workspaceView.update(null));
+  context.subscriptions.push(wsWatcher);
 
   // ---- 保存要求の監視 ----
   const saveWatcher = vscode.workspace.createFileSystemWatcher(`**/.vscode/${SAVE_REQUEST_NAME}`);

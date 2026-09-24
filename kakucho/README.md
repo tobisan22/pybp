@@ -230,7 +230,7 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | **赤丸を置いても止まらない** | フォルダを開かずファイル単体で開いています。**フォルダーを開く**で開き直し、スクリプトをそのフォルダ内に置いてください |
 | `PyBP: Python を実行できません` | `pybp.pythonPath` が正しい Python を指していません。フルパスで指定してみてください |
 | **依存パッケージの確認が毎回出る** | `pybp.pythonPath` が、依存を入れた Python と別のものを指しています。ターミナルで `python -c "import sys; print(sys.executable)"` を実行し、その結果を `pybp.pythonPath` に設定してください |
-| **F5 が反応しない / コマンドが無い** | VS Code を完全終了して開き直してください。それでも駄目なら `code --uninstall-extension local.pybp` の後に再インストール |
+| **F5 が反応しない / コマンドが無い** | VS Code を完全終了して開き直してください。それでも駄目なら `code --uninstall-extension bisan.pybp` の後に再インストール |
 | **`pybp を import できません` と出る** | 拡張に同梱された `pybp` に PYTHONPATH が通っていません。設定 `pybp.useBundledPython` が `true` になっているか確認し、拡張を入れ直して VS Code を完全終了・再起動してください |
 | **`No module named 'IPython'` などで落ちる** | `pybp.pythonPath` の Python に依存が入っていません。F5 で出る［インストール］を選ぶか、`python -m pip install ipython ipdb matplotlib tornado` を実行してください |
 | **図が出ない / タブが空白** | `pybp.webaggPort`（既定 8988）が他のアプリと衝突しています。別の番号に変えてセッションを再起動（Ctrl+Shift+F5）してください。タブが空白のままならパネルの境界をドラッグしてサイズを変えると描画されます |

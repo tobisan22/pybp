@@ -3,6 +3,7 @@
 # PyBP 拡張がワークスペースに書き出す実行時ファイル（.vscode/settings.json は追跡する）
 .vscode/py_*
 *.bundle
+Claude outputs/*
 
 # Python
 __pycache__/

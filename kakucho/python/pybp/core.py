@@ -9,6 +9,7 @@ pybp.core — VS Code の赤丸（ブレークポイント）で停止しつつ�
   - run_cell        : ファイルの一部の行範囲だけを、元の行番号のまま実行
                       （セル実行 / 選択範囲の実行 / 現在行の実行）
   - %pybp / %pybp_cell マジック : IPython セッション内から上の 2 つを呼ぶ
+  - ワークスペースビュー : セルの終了時と停止時に変数一覧を書き出す（pybp.workspace）
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ import textwrap
 import traceback
 from bdb import BdbQuit
 from pathlib import Path
+
+from . import workspace
 
 try:
     from ipdb.__main__ import _get_debugger_cls
@@ -49,6 +52,9 @@ SKIP = [
 ]
 
 FIGURES_NAME = "py_figures.json"  # Python → 拡張 : figure 表示ページの URL
+
+# セッションの .vscode/（python -m pybp が起動時に決める）。ワークスペースビューの書き出し先
+session_vscode_dir: Path | None = None
 
 
 def notify_figures(vscode_dir: Path | None) -> None:
@@ -156,6 +162,51 @@ class VsPdb(Pdb):
             self.set_continue()  # スクリプト本体の終了では止まらず抜ける
             return
         super().user_return(frame, return_value)
+
+    # --- ワークスペースビュー（停止中はそのフレームの変数を出す） --------------
+    def _write_workspace(self) -> None:
+        frame = getattr(self, "curframe", None)
+        if frame is None or self.vscode_dir is None:
+            return
+        ns = getattr(self, "curframe_locals", None)
+        if ns is None:
+            ns = frame.f_locals
+        scope, label, where = workspace.frame_scope(frame)
+        hidden = None
+        try:
+            from IPython import get_ipython
+
+            ip = get_ipython()
+            if ip is not None and ns is ip.user_ns:
+                hidden = ip.user_ns_hidden  # スクリプト本体で停止 = IPython の名前空間そのもの
+        except ImportError:
+            pass
+        workspace.write(
+            self.vscode_dir, ns, hidden=hidden, scope=scope, label=label, where=where
+        )
+
+    def preloop(self):
+        self._write_workspace()  # 停止するたび（ステップごと・事後デバッグ）
+        super().preloop()
+
+    def postcmd(self, stop, line):
+        if not stop:  # `x = 3` や `p x` など、停止したまま打ったコマンドの後
+            self._write_workspace()
+        return super().postcmd(stop, line)
+
+    # u / d でフレームを移ったら、そのフレームの変数に切り替える
+    def do_up(self, arg):
+        r = super().do_up(arg)
+        self._write_workspace()
+        return r
+
+    def do_down(self, arg):
+        r = super().do_down(arg)
+        self._write_workspace()
+        return r
+
+    do_u = do_up
+    do_d = do_down
 
     # --- 停止位置の通知（拡張側がハイライトに使う） ---------------------------
     def interaction(self, frame, tb_or_exc):
@@ -327,3 +378,12 @@ class PybpMagics(Magics):
 
 def load_ipython_extension(ip):
     ip.register_magics(PybpMagics)
+
+    vsdir = session_vscode_dir or find_vscode_dir(Path.cwd())
+
+    def update_workspace(*_):
+        workspace.write(vsdir, ip.user_ns, hidden=ip.user_ns_hidden)
+
+    # F5 / セル実行（%pybp・%pybp_cell もセルの 1 つ）/ プロンプトで打った 1 行、すべての後
+    ip.events.register("post_run_cell", update_workspace)
+    update_workspace()  # 起動直後の空の一覧（拡張が「セッションあり」と分かるように）

@@ -2,7 +2,7 @@
 メモ
 vsixの際build
 vsce package --target win32-x64
-vsce publish 0.3.0
+vsce publish 0.4.0
 
 """
 
