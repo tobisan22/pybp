@@ -53,8 +53,36 @@ SKIP = [
 
 FIGURES_NAME = "py_figures.json"  # Python → 拡張 : figure 表示ページの URL
 
-# セッションの .vscode/（python -m pybp が起動時に決める）。ワークスペースビューの書き出し先
+# セッションの出力先（python -m pybp が起動時に決める）。
+# 停止位置・figure 一覧・変数一覧・保存要求をここへ書く。VS Code 拡張から起動した場合は
+# PYBP_SESSION_DIR（.vscode/py_sessions/<番号>/）で、複数セッションが互いのファイルを
+# 上書きしないようセッションごとに分かれている。赤丸 JSON だけは .vscode/ 直下を共有する。
 session_vscode_dir: Path | None = None
+# セッション生存通知ファイル（busy フラグも持つ）。python -m pybp が設定する
+session_file: Path | None = None
+
+
+def out_dir(vscode_dir: Path | None) -> Path | None:
+    """拡張へ通知するファイルの書き出し先。セッション専用ディレクトリがあればそちら"""
+    return session_vscode_dir if session_vscode_dir is not None else vscode_dir
+
+
+def write_session(busy: bool) -> None:
+    """セッション生存通知を書く。busy は「コードを実行中か」— 拡張が F5 の送り先を
+    選ぶのに使う（実行中のセッションへは送らず、別のセッションで実行する）"""
+    if session_file is None:
+        return
+    data = json.dumps({"pid": os.getpid(), "busy": busy})
+    tmp = session_file.with_name(session_file.name + ".tmp")
+    try:
+        tmp.write_text(data, encoding="utf-8")
+        try:
+            os.replace(tmp, session_file)
+        except PermissionError:  # Windows で拡張が読んでいる瞬間に当たった
+            session_file.write_text(data, encoding="utf-8")
+            tmp.unlink(missing_ok=True)
+    except OSError as e:
+        print(f"[pybp] セッション通知の書き出しに失敗: {e}", file=sys.stderr)
 
 
 def notify_figures(vscode_dir: Path | None) -> None:
@@ -86,11 +114,18 @@ def find_vscode_dir(start: Path) -> Path | None:
 
 
 class VsPdb(Pdb):
-    def __init__(self, script: Path, vscode_dir: Path | None, **kw):
+    def __init__(
+        self,
+        script: Path,
+        vscode_dir: Path | None,
+        out_dir: Path | None = None,
+        **kw,
+    ):
         super().__init__(skip=SKIP, **kw)
         self.script = script.resolve()
-        self.vscode_dir = vscode_dir
-        self.state_file = vscode_dir / STATE_NAME if vscode_dir else None
+        self.vscode_dir = vscode_dir  # 赤丸 JSON を読む場所（全セッション共有）
+        self.out_dir = out_dir if out_dir is not None else vscode_dir  # 通知の書き出し先
+        self.state_file = self.out_dir / STATE_NAME if self.out_dir else None
         self._bp_mtime: float | None = None
 
     def setup(self, f, tb):
@@ -166,7 +201,7 @@ class VsPdb(Pdb):
     # --- ワークスペースビュー（停止中はそのフレームの変数を出す） --------------
     def _write_workspace(self) -> None:
         frame = getattr(self, "curframe", None)
-        if frame is None or self.vscode_dir is None:
+        if frame is None or self.out_dir is None:
             return
         ns = getattr(self, "curframe_locals", None)
         if ns is None:
@@ -182,7 +217,7 @@ class VsPdb(Pdb):
         except ImportError:
             pass
         workspace.write(
-            self.vscode_dir, ns, hidden=hidden, scope=scope, label=label, where=where
+            self.out_dir, ns, hidden=hidden, scope=scope, label=label, where=where
         )
 
     def preloop(self):
@@ -250,7 +285,8 @@ def _execute(script: Path, vsdir, run) -> None:
     赤丸が1つも無ければトレースを一切入れない。例外は事後デバッグに渡し、
     終わったら停止状態と figure 一覧を拡張へ通知する。
     """
-    dbg = VsPdb(script, vsdir)
+    out = out_dir(vsdir)
+    dbg = VsPdb(script, vsdir, out)
     dbg.sync_breakpoints(force=True)
 
     try:
@@ -266,7 +302,7 @@ def _execute(script: Path, vsdir, run) -> None:
     finally:
         dbg._clear_state()
         dbg.clear_all_breaks()
-        notify_figures(vsdir)
+        notify_figures(out)
 
 
 def run_script(script: Path, ns: dict) -> None:
@@ -379,11 +415,19 @@ class PybpMagics(Magics):
 def load_ipython_extension(ip):
     ip.register_magics(PybpMagics)
 
-    vsdir = session_vscode_dir or find_vscode_dir(Path.cwd())
+    vsdir = out_dir(find_vscode_dir(Path.cwd()))
 
     def update_workspace(*_):
         workspace.write(vsdir, ip.user_ns, hidden=ip.user_ns_hidden)
 
-    # F5 / セル実行（%pybp・%pybp_cell もセルの 1 つ）/ プロンプトで打った 1 行、すべての後
-    ip.events.register("post_run_cell", update_workspace)
+    def mark_busy(*_):
+        write_session(True)
+
+    def mark_idle(*_):
+        write_session(False)
+        update_workspace()
+
+    # F5 / セル実行（%pybp・%pybp_cell もセルの 1 つ）/ プロンプトで打った 1 行、すべての前後
+    ip.events.register("pre_run_cell", mark_busy)
+    ip.events.register("post_run_cell", mark_idle)
     update_workspace()  # 起動直後の空の一覧（拡張が「セッションあり」と分かるように）

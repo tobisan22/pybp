@@ -4,6 +4,23 @@ All notable changes to the "pybp" extension will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [0.4.2] - 2026-09-24
+
+### Added
+
+- **複数セッションの同時実行**に対応しました。重いスクリプトを実行している間に、別のスクリプトを F5 で並行して実行できます。
+  - F5 / セル実行は、アクティブなセッションが実行中なら、空いている別のセッションで実行します。空きが無ければ新しいセッション（ターミナル `PyBP 2`, `PyBP 3`, …）を起動します
+  - **PyBP: Run in New Session**（`Ctrl+Alt+F5`、エディタ右上の ▷ の隣）を使うと、必ず新しいセッションで実行します
+  - PyBP のターミナルを切り替えると、そのセッションが F5 の送り先になり、ワークスペースビューもそのセッションの変数を表示します。ステータスバーのクリックか **PyBP: Select Session** からも切り替えられます
+  - 2 つ目以降のセッションの Figure タブには `Figure 1 (PyBP 2)` のようにセッション名が付きます。webagg のポートは `pybp.webaggPort` + (番号 − 1) を使います
+  - Ctrl+Shift+F5（Restart）は、アクティブなセッションだけを作り直します
+  - ブレークポイントで停止中のセッションや、起動中・実行中のセッションへは F5 / セル実行を送りません
+  - 同じスクリプトを複数のセッションで同時に実行することもできます。赤丸は全セッション共通なので、置くとどのセッションも同じ行で止まります
+
+### Changed
+
+- 停止位置・figure 一覧・変数一覧などの通知ファイルの置き場所を `.vscode/` 直下から `.vscode/py_sessions/<番号>/` に移しました（Python 側は環境変数 `PYBP_SESSION_DIR` で受け取ります）。赤丸の `py_breakpoints.json` は従来どおり `.vscode/` 直下で、全セッションが共有します。
+
 ## [0.4.0]
 
 ### Added

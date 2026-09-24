@@ -5,4 +5,4 @@ node_modules
 # *.vsix
 
 # bundle-python.js が生成する同梱 Python（pybp/ が正）
-# python/
+python/

@@ -13,6 +13,9 @@ VS Code からセル実行したときに、セッションがまだ無い場合
              VS Code から起動した場合は設定 pybp.figureDisplay が決める
   PYBP_PORT  webagg のポート (既定 8988)。VS Code 設定 pybp.webaggPort から渡される
   PYBP_FILE  赤丸 JSON のパスを明示したい場合
+  PYBP_SESSION_DIR  停止位置・figure・変数一覧などの通知ファイルを書くディレクトリ。
+             VS Code 拡張が .vscode/py_sessions/<番号>/ を渡し、複数セッションを
+             同時に動かせるようにする。未設定なら .vscode/ 直下（単一セッション）
 """
 
 from __future__ import annotations
@@ -142,6 +145,9 @@ def main() -> None:
 
     # --- セッション生存通知（拡張側が「2回目以降は %pybp を送る」判定に使う） ---
     vsdir = find_vscode_dir(script.parent if script else Path.cwd())
+    if env_dir := os.environ.get("PYBP_SESSION_DIR"):
+        vsdir = Path(env_dir)
+        vsdir.mkdir(parents=True, exist_ok=True)
     if vsdir:
         session = vsdir / SESSION_NAME
         figures = vsdir / FIGURES_NAME
@@ -149,7 +155,8 @@ def main() -> None:
         figures.unlink(missing_ok=True)  # 前回の残骸を消す
         ws.unlink(missing_ok=True)
         core.session_vscode_dir = vsdir
-        session.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        core.session_file = session
+        core.write_session(busy=True)  # 起動直後はスクリプト実行が控えている
         atexit.register(lambda: session.unlink(missing_ok=True))
         atexit.register(lambda: figures.unlink(missing_ok=True))
         atexit.register(lambda: ws.unlink(missing_ok=True))
