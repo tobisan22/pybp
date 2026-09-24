@@ -1,5 +1,7 @@
 """matplotlib webagg サーバーをバックグラウンドスレッドで常駐させる"""
 
+from __future__ import annotations
+
 import asyncio
 import json as _jsonmod
 import os
@@ -27,34 +29,6 @@ window.mpl_ondownload = function (figure, format) {
 _loop = None
 _thread = None
 url: str | None = None
-
-# ---- 一時的な計測ログ（figure タブ空白問題の調査用。原因確定後に削除する） --------
-_log_path: Path | None = None
-_log_lock = threading.Lock()
-
-
-def _log_file() -> Path:
-    """ログの出力先。PYBP_LOG > 作業フォルダの .vscode > 一時フォルダ の順。"""
-    global _log_path
-    if _log_path is not None:
-        return _log_path
-    if env := os.environ.get("PYBP_LOG"):
-        _log_path = Path(env)
-    else:
-        vsdir = Path.cwd() / ".vscode"
-        base = vsdir if vsdir.is_dir() else Path(tempfile.gettempdir())
-        _log_path = base / "py_webagg_log.txt"
-    return _log_path
-
-
-def log(msg: str) -> None:
-    line = f"{time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d}  {msg}\n"
-    try:
-        with _log_lock:
-            with open(_log_file(), "a", encoding="utf-8") as f:
-                f.write(line)
-    except OSError:
-        pass
 
 
 def _force_full_redraw_on_resize() -> None:
@@ -124,10 +98,8 @@ def _install_toolbar_items(W) -> None:
             try:
                 tmp.write_bytes(data)
                 _clipboard_ps(tmp)
-                log(f"TOOL  copy 成功 ({len(data)} bytes)")
                 self.set_message("クリップボードにコピーしました")
             except Exception as e:  # noqa: BLE001 - 画面にそのまま出す
-                log(f"TOOL  copy 失敗: {e}")
                 self.set_message(f"コピーに失敗しました: {e}")
             finally:
                 tmp.unlink(missing_ok=True)
@@ -144,13 +116,11 @@ def _install_toolbar_items(W) -> None:
         vsdir = find_vscode_dir(Path.cwd())
         if vsdir is None:
             self.set_message("保存先を決める VS Code 拡張が見つかりません")
-            log("TOOL  save 失敗: .vscode が見つからない")
             return
         (vsdir / SAVE_REQUEST_NAME).write_text(
             _jsonmod.dumps({"figure": num, "format": fmt or "png", "ts": time.time()}),
             encoding="utf-8",
         )
-        log(f"TOOL  save 要求を書き出し fig{num} format={fmt}")
         self.set_message(f"Figure {num} の保存ダイアログを開いています…")
 
     TB.pybp_copy = pybp_copy
@@ -209,53 +179,26 @@ def _install_assets(W) -> None:
     app_cls._pybp_assets = True
 
 
-def _install_probes(W) -> None:
-    """webagg のページ要求 / WebSocket の全イベントをログに落とす"""
-    page = W.WebAggApplication.SingleFigurePage
-    _page_get = page.get
+def _install_threadsafe_send(W) -> None:
+    """WebSocket への書き込みをサーバースレッドのループへ委譲する。
 
-    def get(self, fignum, *a, **kw):
-        log(f"HTTP  GET /{fignum}  (figure ページ要求)")
-        return _page_get(self, fignum, *a, **kw)
-
-    page.get = get
-
-    # 画像コピーが叩く /N/download.<fmt>
-    dl = W.WebAggApplication.Download
-    _dl_get = dl.get
-
-    def dl_get(self, fignum, fmt, *a, **kw):
-        log(f"HTTP  GET /{fignum}/download.{fmt}  (画像ダウンロード要求)")
-        return _dl_get(self, fignum, fmt, *a, **kw)
-
-    dl.get = dl_get
-
+    メインスレッド（IPython 側）の描画更新が、別スレッドで回っている tornado の
+    WebSocket へ直接書き込むのを防ぐ。
+    """
     ws = W.WebAggApplication.WebSocket
-    _open, _on_message, _on_close = ws.open, ws.on_message, ws.on_close
+    if getattr(ws, "_pybp_threadsafe", False):
+        return
+    _json, _bin = ws.send_json, ws.send_binary
 
-    def open_(self, fignum, *a, **kw):
-        log(f"WS    open fig{fignum}")
-        return _open(self, fignum, *a, **kw)
+    def send_json(self, content):
+        _loop.add_callback(_json, self, content)
 
-    def on_message(self, message):
-        try:
-            d = _jsonmod.loads(message)
-            t = d.get("type")
-            extra = ""
-            if t == "resize":
-                extra = f" width={d.get('width')} height={d.get('height')}"
-            elif t == "supports_binary":
-                extra = f" value={d.get('value')}"
-            log(f"WS    recv fig{getattr(self, 'fignum', '?')} {t}{extra}")
-        except Exception:
-            log(f"WS    recv fig{getattr(self, 'fignum', '?')} <parse error>")
-        return _on_message(self, message)
+    def send_binary(self, blob):
+        _loop.add_callback(_bin, self, blob)
 
-    def on_close(self):
-        log(f"WS    close fig{getattr(self, 'fignum', '?')}")
-        return _on_close(self)
-
-    ws.open, ws.on_message, ws.on_close = open_, on_message, on_close
+    ws.send_json = send_json
+    ws.send_binary = send_binary
+    ws._pybp_threadsafe = True
 
 
 def start_server(port: int = 8988, address: str = "127.0.0.1") -> str:
@@ -273,33 +216,10 @@ def start_server(port: int = 8988, address: str = "127.0.0.1") -> str:
     mpl.rcParams["webagg.port"] = port
     mpl.rcParams["webagg.address"] = address
 
-    # 計測ログを開き直してからプローブを仕込む
-    try:
-        _log_file().write_text("", encoding="utf-8")
-    except OSError:
-        pass
-    log(f"--- pybp webagg start (requested port={port}) ---")
     _force_full_redraw_on_resize()
     _install_toolbar_items(W)
     _install_assets(W)
-    _install_probes(W)
-
-    # WebSocket への書き込みをサーバースレッドのループへ委譲（スレッドセーフ化）。
-    # メインスレッドの描画更新が別スレッドの tornado に直接書き込むのを防ぐ。
-    ws = W.WebAggApplication.WebSocket
-    _json, _bin = ws.send_json, ws.send_binary
-
-    def send_json(self, content):
-        log(f"WS    send fig{getattr(self, 'fignum', '?')} json type={content.get('type')}"
-            + (f" size={content.get('size')}" if content.get("type") == "resize" else ""))
-        _loop.add_callback(_json, self, content)
-
-    def send_binary(self, blob):
-        log(f"WS    send fig{getattr(self, 'fignum', '?')} image {len(blob)} bytes")
-        _loop.add_callback(_bin, self, blob)
-
-    ws.send_json = send_json
-    ws.send_binary = send_binary
+    _install_threadsafe_send(W)
 
     ready = threading.Event()
 

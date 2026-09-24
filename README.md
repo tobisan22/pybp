@@ -28,6 +28,10 @@ pybp/                        （このフォルダ。場所は自由）
 ただし **ipython / ipdb / matplotlib / tornado は利用者の Python に必要**。不足していれば
 初回起動時に拡張が検出して、インストールするか尋ねる（`python -m pip install …` を実行）。
 
+- 対応 Python は **3.9 以上**（`pybp/pyproject.toml` の `requires-python`）
+- 3.9 では pip が ipython 8.18 系 / matplotlib 3.9 系を自動で選ぶ（各パッケージの
+  `Requires-Python` メタデータによる）ので、こちら側でのバージョン指定は不要
+
 - 使う Python は VS Code 設定 `pybp.pythonPath`（既定 `python`）で決まる
 - Marketplace 公開はしていないので、配布は .vsix を配る形になる
 - **開発時は設定 `pybp.useBundledPython` を `false` にすること。** `true` のままだと
@@ -69,7 +73,8 @@ cd <このフォルダ>
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
-| `No module named pybp` | 編集可能インストールが旧パスのまま / 別の Python に入っている | `setup.ps1`。`pybp.pythonPath` と `-Python` を一致させる |
+| `No module named pybp` | 拡張が `pybp` を見つけられない | 起動前に検出して原因付きで通知される。`.vscode/py_ext_log.txt` の `PROBE pybp=` と `SESSION PYTHONPATH=` を見る。`useBundledPython: false` なら `setup.ps1`、`true` なら拡張を再インストール |
+| 依存は入れたのに `ModuleNotFoundError` | ターミナルの `python` が、拡張が診断した Python と別（conda / venv の自動アクティベート） | 対処済み。ターミナルは診断した絶対パスの Python を直接起動する。`py_ext_log.txt` の `PROBE exe=` で実際の処理系を確認できる |
 | import できるが古い挙動 | 旧 egg-info(0.1.0) や別 site-packages のコピーが優先 | `pip uninstall pybp` を `pip show pybp` が空になるまで繰り返し → `setup.ps1` |
 | F5 が反応しない / コマンドが無い | 旧パスの拡張が入ったまま、または未インストール | `code --uninstall-extension local.pybp` → 再インストール → VS Code 再起動 |
 | `tsc` が動かない・compile 失敗 | 移動でコピーされた `node_modules` が壊れている（`.bin` のリンク等） | `node_modules` を削除して `npm install` |
@@ -77,7 +82,7 @@ cd <このフォルダ>
 | 図が出ない | webagg ポート競合 | `pybp.webaggPort` と環境変数 `PYBP_PORT` を揃える／変更 |
 | `pybp/` を編集しても反映されない | 同梱版が `PYTHONPATH` 経由で優先されている | 設定 `pybp.useBundledPython` を `false` にする |
 | 依存パッケージの確認ダイアログが毎回出る | `pybp.pythonPath` が依存を入れた Python と別 | `pybp.pythonPath` を確認する |
-| Figure タブが空白（特に最初の1枚） | 背面で生成されたタブでは matplotlib の canvas サイズ確定が走らない | 拡張側で iframe を 1px 揺らして対処済み。再発したらパネルの境界をドラッグしてサイズを変える |
+| Figure タブが空白（特に最初の1枚） | 背面で生成されたタブでは canvas のサイズ確定が後から走り、同サイズ resize に差分画像しか返らない | Python 側（`webagg.py` の `_force_full_redraw_on_resize`）で対処済み。再発したらパネルの境界をドラッグしてサイズを変える |
 
 ## 引っ越し時のルール
 
@@ -91,6 +96,9 @@ cd <このフォルダ>
 | キー | 状態 | 動作 |
 |---|---|---|
 | F5 | 通常 | 初回: IPython セッション起動 + 実行 / 2回目以降: 同セッションで再実行 |
+| Ctrl+Enter | 通常 | カーソルのあるセル（`# %%` 区切り）を実行 |
+| Shift+Enter | 通常 | セルを実行して次のセルへ進む |
+| Ctrl+Shift+Enter | 通常 | 選択範囲（無ければ現在行）を実行 |
 | F5 | 停止中 | 続行 (`c`) |
 | F10 | 停止中 | ステップオーバー (`n`) |
 | F11 / Shift+F11 | 停止中 | ステップイン (`s`) / ステップアウト (`r`) |
@@ -104,9 +112,21 @@ cd <このフォルダ>
 - ツールバーの **保存**（フロッピー）は VS Code の保存ダイアログを開く。形式は隣のドロップダウン（png / svg / pdf など）に従う
   - webview は `window.open` とダウンロードをブロックするため、matplotlib 標準の保存は無反応になる。そこで押下をサーバー経由で拡張に渡し、拡張側で保存している
   - この経路は VS Code の拡張が動いていることが前提。ブラウザで `http://127.0.0.1:8988/1` を直接開いた場合は保存が効かない
+- Ctrl+Enter / Shift+Enter は Jupyter 拡張・Python 拡張とぶつかる。拡張どうしの優先順位は指定できず
+  （後から読み込まれた方が勝つ）、ユーザーの `keybindings.json` だけが確実に拡張より優先される。
+  そのため `PyBP: Use PyBP Cell Keys`（`pybp.useCellKeys`）でユーザー設定へ書き込む方式にしている。
+  Jupyter 拡張が入っていれば起動時に一度だけ確認を出す（`globalState` の `pybp.keybindingPromptDone` で抑止）
+- `# %%` でセルに区切ると、Ctrl+Enter でそのセルだけを実行できる（MATLAB のセクション実行）。
+  区切りが無いファイルは全体が 1 セル。
+  拡張は `%pybp_cell "file" 開始行 終了行` を送り、Python 側は先頭に空行を詰めて行番号を合わせたうえで実行する。
+  行番号が一致しているので赤丸も例外行もそのまま効く。セル末尾が式ならその値が `Out[n]` に出る
 - 実行が終わってもセッションは生きている。IPython プロンプトでそのまま変数を確認・追加計算できる（MATLAB のコマンドウィンドウと同じ使い心地）
 - matplotlib の figure は webagg バックエンドでノンブロッキング表示され、figure ごとに VS Code のタブが開く。実行後も残る
 - `%reset` でワークスペースをクリア、`plt.close("all")` で figure を全閉
+- アクティビティバーの PyBP アイコン → **WORKSPACE** に変数の一覧（名前・値・サイズ・クラス）が出る（MATLAB のワークスペース）
+  - 実行後・プロンプトで打った後に自動更新。停止中はそのフレームのローカル変数（`u` / `d` で切り替わる）
+  - 緑の点 = 新規、黄の点 = 直前の実行・ステップで変更。dict / list / 自作クラスは ▸ で 1 段だけ展開
+  - Python 側（`pybp/workspace.py`）が `.vscode/py_workspace.json` に要約を書き、拡張がそれを表示するだけ。値そのものは受け渡さない
 - 自作モジュールは `autoreload` で編集が自動反映（挙動が怪しければ Ctrl+Shift+F5）
 
 ## 設定
@@ -114,10 +134,23 @@ cd <このフォルダ>
 - VS Code 設定 `pybp.pythonPath` : セッション起動に使う Python（既定 `python`）
 - VS Code 設定 `pybp.useBundledPython` : 同梱の pybp を `PYTHONPATH` 経由で使う（既定 `true`）。**開発時は `false`**
 - VS Code 設定 `pybp.webaggPort` : webagg のポート（既定 `8988`）。セッション起動時に環境変数 `PYBP_PORT` として Python へ渡される
-- 環境変数 `PYBP_MPL` : matplotlib バックエンド（既定 `webagg`。`qt` / `tk` / `inline` / `none`）
+- VS Code 設定 `pybp.figureDisplay` : 図の表示先（既定 `tab`）
+  - `tab` … figure ごとに VS Code のタブを自動で開く
+  - `manual` … webagg だがタブは自動で開かない（📈 で開く）。旧 `autoOpenFigures: false` 相当
+  - `window` … Qt / Tk の別ウィンドウ。webagg サーバーは起動しない
+  - `none` … 表示しない。webagg サーバーもポートも使わない（Agg。`savefig` は使える）
+- VS Code 設定 `pybp.windowBackend` : `figureDisplay: window` のバックエンド（`auto` / `qt` / `tk`、既定 `auto`）
+- VS Code 設定 `pybp.showCellDecorations` : `# %%` の区切り線と現在セルの強調（既定 `true`）
+- VS Code 設定 `pybp.autoOpenFigures` : **非推奨**。`figureDisplay` に統合（`false` = `manual`）
+- 環境変数 `PYBP_MPL` : matplotlib バックエンド（既定 `webagg`。`qt` / `tk` / `inline` / `none` / `auto`）。
+  ターミナルから `python -m pybp` を直接叩く時用。VS Code から起動した場合は
+  `pybp.figureDisplay` / `pybp.windowBackend` が上書きする
 
 ## 制約
 
 - 赤丸がある実行は pdb トレースが入るため、純粋な数値計算は遅くなる（赤丸ゼロなら素の速度）
-- 停止中の変数ホバー表示は非対応（`ipdb>` で変数名を打つ）
+- 停止中の変数ホバー表示は非対応（WORKSPACE で見るか、`ipdb>` で変数名を打つ）
+- WORKSPACE は一覧表示のみ。配列の中身を表で開く・値を編集する機能は無い
+- `figureDisplay: window` では Figure タブが無いため、📋 コピーと VS Code の保存ダイアログは使えない
+  （matplotlib 標準のウィンドウのツールバーを使う）
 - 標準ライブラリ・IPython・matplotlib 内部には F11 でも潜らない（`core.py` の `SKIP`）

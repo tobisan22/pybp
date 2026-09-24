@@ -2,7 +2,7 @@
 name = "pybp"
 version = "0.2.0"
 description = "Persistent IPython session runner for VS Code: run Python with editor breakpoints, keep variables and figures alive after the run"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "ipython",
     "ipdb",

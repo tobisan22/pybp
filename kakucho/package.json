@@ -2,16 +2,32 @@
   "name": "pybp",
   "displayName": "PyBP - Persistent Python Session Runner",
   "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
-  "version": "0.2.0",
-  "publisher": "local",
+  "version": "0.4.0",
+  "publisher": "bisan",
+  "license": "MIT",
+  "icon": "pybp_icon.png",
   "repository": { "type": "git", "url": "https://example.invalid/pybp" },
   "engines": { "vscode": "^1.85.0" },
-  "categories": ["Debuggers", "Other"],
+  "categories": ["Debuggers", "Extension Packs","Visualization"],
   "activationEvents": ["onLanguage:python"],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "pybp", "title": "PyBP", "icon": "media/workspace.svg" }
+      ]
+    },
+    "views": {
+      "pybp": [
+        { "type": "webview", "id": "pybp.workspace", "name": "Workspace" }
+      ]
+    },
     "commands": [
       { "command": "pybp.run",      "title": "PyBP: Run with Breakpoints", "icon": "$(debug-start)" },
+      { "command": "pybp.runCell",           "title": "PyBP: Run Cell (# %%)" },
+      { "command": "pybp.runCellAndAdvance", "title": "PyBP: Run Cell and Advance" },
+      { "command": "pybp.runSelection",      "title": "PyBP: Run Selection / Line" },
+      { "command": "pybp.useCellKeys",       "title": "PyBP: Use PyBP Cell Keys (fix Ctrl+Enter conflict)" },
       { "command": "pybp.continue", "title": "PyBP: Continue",             "icon": "$(debug-continue)" },
       { "command": "pybp.stepOver", "title": "PyBP: Step Over",            "icon": "$(debug-step-over)" },
       { "command": "pybp.stepInto", "title": "PyBP: Step Into",            "icon": "$(debug-step-into)" },
@@ -23,6 +39,9 @@
     ],
     "keybindings": [
       { "command": "pybp.run",      "key": "f5",             "when": "editorLangId == python && !pybp.stopped && !inDebugMode" },
+      { "command": "pybp.runCell",           "key": "ctrl+enter",       "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+      { "command": "pybp.runCellAndAdvance", "key": "shift+enter",      "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+      { "command": "pybp.runSelection",      "key": "ctrl+shift+enter", "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
       { "command": "pybp.continue", "key": "f5",             "when": "pybp.stopped" },
       { "command": "pybp.stepOver", "key": "f10",            "when": "pybp.stopped" },
       { "command": "pybp.stepInto", "key": "f11",            "when": "pybp.stopped" },
@@ -32,6 +51,10 @@
       { "command": "pybp.copyFigure", "key": "ctrl+c",       "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive" }
     ],
     "menus": {
+      "commandPalette": [
+        { "command": "pybp.openFigures", "when": "!pybp.noFigureTabs" },
+        { "command": "pybp.copyFigure",  "when": "!pybp.noFigureTabs" }
+      ],
       "editor/title/run": [
         { "command": "pybp.run", "when": "editorLangId == python", "group": "navigation" }
       ],
@@ -42,7 +65,7 @@
         { "command": "pybp.stepOut",  "when": "editorLangId == python && pybp.stopped", "group": "navigation@4" },
         { "command": "pybp.stop",     "when": "editorLangId == python && pybp.stopped", "group": "navigation@5" },
         { "command": "pybp.restart",  "when": "editorLangId == python && !pybp.stopped", "group": "navigation@1" },
-        { "command": "pybp.openFigures", "when": "editorLangId == python", "group": "navigation@0" },
+        { "command": "pybp.openFigures", "when": "editorLangId == python && !pybp.noFigureTabs", "group": "navigation@0" },
         { "command": "pybp.copyFigure", "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive", "group": "navigation@0" }
       ]
     },
@@ -64,10 +87,39 @@
           "default": true,
           "description": "拡張に同梱した pybp を PYTHONPATH 経由で使う（pip install 不要）。pybp/ を編集して開発する場合は false にする — true のままだと同梱版が pip install -e を隠してしまう"
         },
+        "pybp.figureDisplay": {
+          "type": "string",
+          "enum": ["tab", "manual", "window", "none"],
+          "enumDescriptions": [
+            "VS Code のタブに出す。figure ごとに 1 タブ、作られたら自動で開く",
+            "VS Code のタブに出すが自動では開かない。📈 PyBP: Open Figures で開く",
+            "OS の別ウィンドウに出す（matplotlib の Qt / Tk バックエンド）。タブ・📋 コピー・保存ダイアログは使えない",
+            "図を表示しない。webagg サーバーを起動せずポートも使わない（Agg バックエンド）。plt.show() は何もせず、savefig は使える"
+          ],
+          "default": "tab",
+          "description": "matplotlib の figure をどこに表示するか。変更したら Ctrl+Shift+F5 でセッションを作り直す"
+        },
+        "pybp.windowBackend": {
+          "type": "string",
+          "enum": ["auto", "qt", "tk"],
+          "enumDescriptions": [
+            "PyQt / PySide があれば Qt、無ければ Tk",
+            "Qt（PyQt5 / PyQt6 / PySide2 / PySide6 のいずれかが必要）",
+            "Tk（標準の tkinter）"
+          ],
+          "default": "auto",
+          "description": "pybp.figureDisplay が window のときに使う matplotlib バックエンド"
+        },
+        "pybp.showCellDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "`# %%` の行に区切り線を引き、カーソルのあるセルを薄く強調する"
+        },
         "pybp.autoOpenFigures": {
           "type": "boolean",
           "default": true,
-          "description": "figure が作られたら Figure タブを自動で開く"
+          "description": "（非推奨）pybp.figureDisplay に統合されました。false は figureDisplay: manual と同じ",
+          "markdownDeprecationMessage": "`#pybp.figureDisplay#` に統合されました。`false` は `manual` に相当します。"
         }
       }
     }

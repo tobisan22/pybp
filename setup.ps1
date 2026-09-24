@@ -60,7 +60,7 @@ if (-not $PythonOnly) {
     if (-not (Test-Path "out\extension.js")) { throw "out\extension.js was not produced" }
 
     Step "Extension: package vsix"
-    Run "npx" @("--yes", "@vscode/vsce", "package", "--skip-license", "--allow-missing-repository", "--no-dependencies")
+    Run "npx" @("--yes", "@vscode/vsce", "package", "--target", "win32-x64", "--skip-license", "--allow-missing-repository", "--no-dependencies")
     $vsix = Get-ChildItem "*.vsix" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
     Step "Extension: reinstall into VS Code"

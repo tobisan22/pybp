@@ -9,6 +9,11 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
 
 ---
 
+## 動作環境
+
+**この拡張機能は Windows 専用です。** macOS / Linux では動作しません。
+Marketplace にも Windows (win32-x64) 向けのプラットフォーム限定パッケージとして公開しています。
+
 ## インストール
 
 1. `.vsix` を受け取ったフォルダで:
@@ -25,9 +30,13 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
    code --list-extensions
    ```
 
-   `local.pybp` が出れば OK です。
+   `bisan.pybp` が出れば OK です。
 
 ### 必要なもの
+
+**OS: Windows のみ。**
+
+**Python 3.9 以上**（3.9 〜 3.13 で動作します）。
 
 使う Python に以下が入っている必要があります。
 
@@ -47,6 +56,9 @@ debugpy は使いません（中身は IPython + ipdb）。赤丸を1つも置�
 ```
 python -m pip install ipython ipdb matplotlib tornado
 ```
+
+Python 3.9 の場合、pip が自動的にその版に対応するバージョン
+（ipython 8.18 系 / matplotlib 3.9 系）を選びます。バージョン指定は不要です。
 
 **`pybp` パッケージ本体はこの拡張に同梱されています。`pip install pybp` は不要です。**
 
@@ -74,6 +86,9 @@ python -m pip install ipython ipdb matplotlib tornado
 | キー | 状態 | 動作 |
 |---|---|---|
 | **F5** | 通常 | 初回: セッション起動 + 実行 / 2回目以降: **同じセッションで再実行** |
+| **Ctrl+Enter** | 通常 | カーソルのある**セルを実行** |
+| **Shift+Enter** | 通常 | セルを実行して**次のセルへ進む** |
+| **Ctrl+Shift+Enter** | 通常 | **選択範囲**（選択が無ければ**現在行**）を実行 |
 | **F5** | 停止中 | 続行 (`c`) |
 | **F10** | 停止中 | ステップオーバー (`n`) |
 | **F11** | 停止中 | ステップイン (`s`) |
@@ -86,6 +101,52 @@ python -m pip install ipython ipdb matplotlib tornado
 すべて `Ctrl+Shift+P` のコマンドパレットから `PyBP:` で呼ぶこともできます。
 
 F5 を押すとファイルは自動保存されてから実行されます。
+
+### セル実行（`# %%`）
+
+MATLAB のセクション（`%%`）と同じ感覚で、スクリプトの一部だけを繰り返し実行できます。
+コメント行 `# %%`（`#%%` でも可）を書くと、そこがセルの区切りになります。
+
+```python
+# %% データの準備
+import numpy as np
+x = np.linspace(0, 10, 100)
+
+# %% ここだけ何度も試す
+y = np.sin(x * 2)
+y.max()
+```
+
+- **Ctrl+Enter** でカーソルのあるセルだけを実行します。上のセルで作った変数はそのまま残っているので、
+  重い前処理を一度だけ走らせて、下のセルを何度も書き換えながら試せます
+- **Shift+Enter** は実行してから次のセルへ進みます。上から順に試すときはこれを押し続けてください
+- **Ctrl+Shift+Enter** は選択範囲（何も選んでいなければカーソル行）を実行します。
+  `for` の中身のように字下げされた部分だけを選んでも実行できます
+- セルの**最後が式なら、その値が `Out[n]` に表示されます**（`y.max()` の行など）
+- **赤丸はセル実行でも効きます。** 例外が起きた行で止まるのも F5 と同じです
+- 区切り行には線が引かれ、カーソルのあるセルが薄く強調されます。左端の折りたたみでセル単位に畳めます
+  （`pybp.showCellDecorations` で切り替え）
+- セッションがまだ無ければ、セル実行がそのままセッションの起動も兼ねます
+- ファイルは実行前に自動保存されます（Python 側がファイルを読み直すため）
+
+- セル区切りが 1 つも無いファイルでは、全体が 1 セルです（Ctrl+Enter は F5 と同じ範囲を実行します）
+
+> **Jupyter 拡張を入れていると Ctrl+Enter / Shift+Enter を取られます。**
+> Jupyter / Python 拡張も同じキーを使っており、拡張どうしの優先順位は選べないため、
+> そのままではインタラクティブウィンドウが開くことがあります。
+> `Ctrl+Shift+P` →「**PyBP: Use PyBP Cell Keys**」を実行すると、あなたのキー設定
+> （`keybindings.json`。拡張の割り当てより必ず優先されます）に PyBP の割り当てを追加します。
+> Jupyter 拡張が入っていれば、初回起動時にも確認のメッセージが出ます。
+> 手で書く場合は次の 3 行です。
+>
+> ```json
+> { "key": "ctrl+enter",       "command": "pybp.runCell",           "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+> { "key": "shift+enter",      "command": "pybp.runCellAndAdvance", "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" },
+> { "key": "ctrl+shift+enter", "command": "pybp.runSelection",      "when": "editorTextFocus && editorLangId == python && !pybp.stopped && !inDebugMode && !suggestWidgetVisible" }
+> ```
+
+> **Ctrl+Enter は VS Code 標準の「下に行を挿入」を Python ファイル上で置き換えます。**
+> 元の動作が必要なら、キーボードショートカット設定で `pybp.runCell` を別のキーに変えてください。
 
 ### 2回目以降が速い理由
 
@@ -127,7 +188,16 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
   （png / svg / pdf など）に従います
 - `plt.close(n)` で閉じた figure のタブは自動的に閉じます。`plt.close("all")` で全部閉じます
 - タブを自分で閉じても figure 自体は生きているので、**PyBP: Open Figures**（📈 ボタン）で開き直せます
-- 自動で開いてほしくない場合は設定 `pybp.autoOpenFigures` を `false` に
+- 自動で開いてほしくない場合は設定 `pybp.figureDisplay` を `manual` に。
+  figure は作られたままなので、**PyBP: Open Figures**（📈）で必要なときだけ開けます
+- **タブではなく OS の別ウィンドウに出したい場合は `pybp.figureDisplay` を `window`** に。
+  matplotlib の Qt / Tk バックエンドに切り替わり、webagg サーバーは起動しません
+  （どちらを使うかは `pybp.windowBackend`。`auto` なら PyQt / PySide → tkinter の順に探します）。
+  この場合 Figure タブが無いので、📋 コピーと VS Code の保存ダイアログは使えません。
+  matplotlib のウィンドウに付いている標準のツールバーを使ってください
+- **図を一切出したくない場合は `pybp.figureDisplay` を `none`** に。webagg サーバーを
+  起動しないのでポート（既定 8988）も使いません。`Agg` バックエンドになるため
+  `plt.show()` は何もせず、`fig.savefig("out.png")` でのファイル出力はそのまま使えます
 
 ---
 
@@ -140,9 +210,16 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | `pybp.pythonPath` | `python` | セッション起動に使う Python 実行ファイル。フルパス可 |
 | `pybp.webaggPort` | `8988` | 図の表示に使うポート。他のアプリと衝突する場合に変更 |
 | `pybp.useBundledPython` | `true` | 同梱の `pybp` を使う。**通常は `true` のままにしてください** |
-| `pybp.autoOpenFigures` | `true` | figure が作られたら Figure タブを自動で開く |
+| `pybp.figureDisplay` | `tab` | 図の表示先。`tab`（タブを自動で開く）/ `manual`（タブだが自動で開かない）/ `window`（別ウィンドウ）/ `none`（表示しない） |
+| `pybp.windowBackend` | `auto` | `figureDisplay` が `window` のときのバックエンド。`auto` / `qt` / `tk` |
+| `pybp.showCellDecorations` | `true` | `# %%` の区切り線と、カーソルのあるセルの強調を表示する |
+| `pybp.autoOpenFigures` | `true` | 非推奨。`pybp.figureDisplay` に統合されました（`false` は `manual` と同じ） |
 
-環境変数 `PYBP_MPL` で matplotlib のバックエンドを変えられます（既定 `webagg`。`qt` / `tk` / `inline` / `none`）。
+`pybp.figureDisplay` を変えたら **Ctrl+Shift+F5** でセッションを作り直してください
+（バックエンドは起動時に決まります）。確認のダイアログも出ます。
+
+ターミナルから `python -m pybp` を直接起動する場合は、環境変数 `PYBP_MPL` で
+バックエンドを指定できます（既定 `webagg`。`qt` / `tk` / `inline` / `none` / `auto`）。
 
 ---
 
@@ -153,9 +230,13 @@ matplotlib の figure は webagg バックエンドでノンブロッキング�
 | **赤丸を置いても止まらない** | フォルダを開かずファイル単体で開いています。**フォルダーを開く**で開き直し、スクリプトをそのフォルダ内に置いてください |
 | `PyBP: Python を実行できません` | `pybp.pythonPath` が正しい Python を指していません。フルパスで指定してみてください |
 | **依存パッケージの確認が毎回出る** | `pybp.pythonPath` が、依存を入れた Python と別のものを指しています。ターミナルで `python -c "import sys; print(sys.executable)"` を実行し、その結果を `pybp.pythonPath` に設定してください |
-| **F5 が反応しない / コマンドが無い** | VS Code を完全終了して開き直してください。それでも駄目なら `code --uninstall-extension local.pybp` の後に再インストール |
+| **F5 が反応しない / コマンドが無い** | VS Code を完全終了して開き直してください。それでも駄目なら `code --uninstall-extension bisan.pybp` の後に再インストール |
+| **`pybp を import できません` と出る** | 拡張に同梱された `pybp` に PYTHONPATH が通っていません。設定 `pybp.useBundledPython` が `true` になっているか確認し、拡張を入れ直して VS Code を完全終了・再起動してください |
+| **`No module named 'IPython'` などで落ちる** | `pybp.pythonPath` の Python に依存が入っていません。F5 で出る［インストール］を選ぶか、`python -m pip install ipython ipdb matplotlib tornado` を実行してください |
 | **図が出ない / タブが空白** | `pybp.webaggPort`（既定 8988）が他のアプリと衝突しています。別の番号に変えてセッションを再起動（Ctrl+Shift+F5）してください。タブが空白のままならパネルの境界をドラッグしてサイズを変えると描画されます |
 | **図のコピーができない** | Windows のみ対応です。macOS / Linux では 💾 での保存を使ってください |
+| **Ctrl+Enter でインタラクティブウィンドウが開く** | Jupyter 拡張に取られています。`Ctrl+Shift+P` →「PyBP: Use PyBP Cell Keys」を実行してください（あなたのキー設定は拡張より優先されます） |
+| **Ctrl+Enter で何も起きない** | 拡張が古い可能性があります。バージョン 0.3.0 以降が入っているか確認してください（`Ctrl+Shift+X` で `pybp` を検索） |
 | **セッションがおかしくなった** | **Ctrl+Shift+F5** でセッションを作り直してください。それでも駄目ならターミナル「PyBP」を閉じてから F5 |
 
 原因が分からないときは、ワークスペースの `.vscode/py_ext_log.txt` に拡張側の動作ログが残っています
@@ -172,6 +253,7 @@ PyBP は拡張と Python の間のやり取りに、開いているフォルダ�
 | `py_debug_state.json` | Python → 拡張 : 現在の停止位置 |
 | `py_session.json` | Python → 拡張 : セッションが生きているかの通知 |
 | `py_figures.json` | Python → 拡張 : 表示中の figure 番号 |
+| `py_save_request.json` | Python → 拡張 : 図の保存ダイアログ要求 |
 | `py_ext_log.txt` | 拡張の動作ログ（調査用） |
 
 git で管理しているフォルダなら、`.gitignore` に `.vscode/py_*` を足しておくと邪魔になりません。
