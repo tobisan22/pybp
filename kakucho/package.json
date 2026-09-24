@@ -2,7 +2,7 @@
   "name": "pybp",
   "displayName": "PyBP - Persistent Python Session Runner",
   "description": "F5 runs your script in a persistent IPython session: breakpoints work without debugpy, and variables and figures stay alive after the run.",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "publisher": "bisan",
   "license": "MIT",
   "icon": "pybp_icon.png",
@@ -24,6 +24,10 @@
     },
     "commands": [
       { "command": "pybp.run",      "title": "PyBP: Run with Breakpoints", "icon": "$(debug-start)" },
+      { "command": "pybp.runInNewSession", "title": "PyBP: Run in New Session", "icon": "$(debug-alt)" },
+      { "command": "pybp.runStopOnError",  "title": "PyBP: Run (Stop on Error)" },
+      { "command": "pybp.debugLastError",  "title": "PyBP: Debug Last Error", "icon": "$(bug)" },
+      { "command": "pybp.selectSession",   "title": "PyBP: Select Session" },
       { "command": "pybp.runCell",           "title": "PyBP: Run Cell (# %%)" },
       { "command": "pybp.runCellAndAdvance", "title": "PyBP: Run Cell and Advance" },
       { "command": "pybp.runSelection",      "title": "PyBP: Run Selection / Line" },
@@ -32,7 +36,7 @@
       { "command": "pybp.stepOver", "title": "PyBP: Step Over",            "icon": "$(debug-step-over)" },
       { "command": "pybp.stepInto", "title": "PyBP: Step Into",            "icon": "$(debug-step-into)" },
       { "command": "pybp.stepOut",  "title": "PyBP: Step Out",             "icon": "$(debug-step-out)" },
-      { "command": "pybp.stop",     "title": "PyBP: Stop (quit debugger)", "icon": "$(debug-stop)" },
+      { "command": "pybp.stop",     "title": "PyBP: Quit Debugger (q)", "icon": "$(debug-stop)" },
       { "command": "pybp.restart",  "title": "PyBP: Restart Session",      "icon": "$(debug-restart)" },
       { "command": "pybp.openFigures", "title": "PyBP: Open Figures", "icon": "$(graph)" },
       { "command": "pybp.copyFigure", "title": "PyBP: Copy Figure Image", "icon": "$(copy)" }
@@ -48,6 +52,8 @@
       { "command": "pybp.stepOut",  "key": "shift+f11",      "when": "pybp.stopped" },
       { "command": "pybp.stop",     "key": "shift+f5",       "when": "pybp.stopped" },
       { "command": "pybp.restart",  "key": "ctrl+shift+f5",  "when": "editorLangId == python" },
+      { "command": "pybp.runInNewSession", "key": "ctrl+alt+f5", "when": "editorLangId == python && !inDebugMode" },
+      { "command": "pybp.runStopOnError",  "key": "alt+f5",      "when": "editorLangId == python && !pybp.stopped && !inDebugMode" },
       { "command": "pybp.copyFigure", "key": "ctrl+c",       "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive" }
     ],
     "menus": {
@@ -56,17 +62,18 @@
         { "command": "pybp.copyFigure",  "when": "!pybp.noFigureTabs" }
       ],
       "editor/title/run": [
-        { "command": "pybp.run", "when": "editorLangId == python", "group": "navigation" }
+        { "command": "pybp.run", "when": "editorLangId == python", "group": "navigation@0" },
+        { "command": "pybp.runInNewSession", "when": "editorLangId == python", "group": "navigation@1" }
       ],
       "editor/title": [
+        { "command": "pybp.stop",     "when": "editorLangId == python && pybp.stopped", "group": "navigation@0" },
         { "command": "pybp.continue", "when": "editorLangId == python && pybp.stopped", "group": "navigation@1" },
         { "command": "pybp.stepOver", "when": "editorLangId == python && pybp.stopped", "group": "navigation@2" },
         { "command": "pybp.stepInto", "when": "editorLangId == python && pybp.stopped", "group": "navigation@3" },
         { "command": "pybp.stepOut",  "when": "editorLangId == python && pybp.stopped", "group": "navigation@4" },
-        { "command": "pybp.stop",     "when": "editorLangId == python && pybp.stopped", "group": "navigation@5" },
         { "command": "pybp.restart",  "when": "editorLangId == python && !pybp.stopped", "group": "navigation@1" },
-        { "command": "pybp.openFigures", "when": "editorLangId == python && !pybp.noFigureTabs", "group": "navigation@0" },
-        { "command": "pybp.copyFigure", "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive", "group": "navigation@0" }
+        { "command": "pybp.openFigures", "when": "editorLangId == python && !pybp.noFigureTabs", "group": "navigation@9" },
+        { "command": "pybp.copyFigure", "when": "activeWebviewPanelId == 'pybpFigure' || pybp.figureActive", "group": "navigation@9" }
       ]
     },
     "configuration": {

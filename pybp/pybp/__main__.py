@@ -1,10 +1,11 @@
 """
-python -m pybp [script.py] [--cell START END]
+python -m pybp [script.py] [--cell START END] [--pm]
 
 IPython セッションを起動し、%pybp / %pybp_cell マジックを登録する。
 script.py が渡されていれば起動直後にそれを実行し、終了後もセッションを維持する。
 --cell を付けると、スクリプト全体ではなくその行範囲（1 始まり・両端含む）だけを実行する。
 VS Code からセル実行したときに、セッションがまだ無い場合の起動で使われる。
+--pm を付けると、その最初の実行でエラーが出たときにその行で止まる（VS Code の Alt+F5）。
 
 環境変数:
   PYBP_MPL   matplotlib バックエンド (既定 "webagg")。"qt", "tk", "inline",
@@ -13,6 +14,9 @@ VS Code からセル実行したときに、セッションがまだ無い場合
              VS Code から起動した場合は設定 pybp.figureDisplay が決める
   PYBP_PORT  webagg のポート (既定 8988)。VS Code 設定 pybp.webaggPort から渡される
   PYBP_FILE  赤丸 JSON のパスを明示したい場合
+  PYBP_SESSION_DIR  停止位置・figure・変数一覧などの通知ファイルを書くディレクトリ。
+             VS Code 拡張が .vscode/py_sessions/<番号>/ を渡し、複数セッションを
+             同時に動かせるようにする。未設定なら .vscode/ 直下（単一セッション）
 """
 
 from __future__ import annotations
@@ -67,6 +71,7 @@ def startup_lines(
     port: int,
     script: str | Path | None,
     cell: tuple[int, int] | None = None,
+    post_mortem: bool = False,
 ) -> list[str]:
     """IPython の exec_lines を組む。
 
@@ -100,10 +105,11 @@ def startup_lines(
     else:
         lines.append(f"%matplotlib {mpl}")
     lines += ["%load_ext autoreload", "%autoreload 2"]
+    pm = "--pm " if post_mortem else ""
     if script and cell:
-        lines.append(f'%pybp_cell "{script}" {cell[0]} {cell[1]}')
+        lines.append(f'%pybp_cell {pm}"{script}" {cell[0]} {cell[1]}')
     elif script:
-        lines.append(f'%pybp "{script}"')
+        lines.append(f'%pybp {pm}"{script}"')
     return lines
 
 
@@ -138,10 +144,15 @@ def ipython_config(exec_lines: list[str]) -> Config:
 
 
 def main() -> None:
-    script, cell = parse_args(sys.argv[1:])
+    argv = sys.argv[1:]
+    post_mortem = "--pm" in argv  # 位置は問わない（parse_args は従来の形のまま）
+    script, cell = parse_args([a for a in argv if a != "--pm"])
 
     # --- セッション生存通知（拡張側が「2回目以降は %pybp を送る」判定に使う） ---
     vsdir = find_vscode_dir(script.parent if script else Path.cwd())
+    if env_dir := os.environ.get("PYBP_SESSION_DIR"):
+        vsdir = Path(env_dir)
+        vsdir.mkdir(parents=True, exist_ok=True)
     if vsdir:
         session = vsdir / SESSION_NAME
         figures = vsdir / FIGURES_NAME
@@ -149,7 +160,8 @@ def main() -> None:
         figures.unlink(missing_ok=True)  # 前回の残骸を消す
         ws.unlink(missing_ok=True)
         core.session_vscode_dir = vsdir
-        session.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        core.session_file = session
+        core.write_session(busy=True)  # 起動直後はスクリプト実行が控えている
         atexit.register(lambda: session.unlink(missing_ok=True))
         atexit.register(lambda: figures.unlink(missing_ok=True))
         atexit.register(lambda: ws.unlink(missing_ok=True))
@@ -157,7 +169,7 @@ def main() -> None:
     # --- IPython 設定 ---
     mpl = resolve_backend(os.environ.get("PYBP_MPL", "webagg").lower())
     port = int(os.environ.get("PYBP_PORT", "8988"))
-    exec_lines = startup_lines(mpl, port, script, cell)
+    exec_lines = startup_lines(mpl, port, script, cell, post_mortem)
 
     c = ipython_config(exec_lines)
 

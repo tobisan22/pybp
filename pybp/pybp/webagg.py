@@ -110,10 +110,10 @@ def _install_toolbar_items(W) -> None:
 
     def pybp_save(self, fmt="png"):
         """保存要求を書き出し、VS Code 拡張に保存ダイアログを開いてもらう"""
-        from pybp.core import find_vscode_dir
+        from pybp.core import find_vscode_dir, out_dir
 
         num = getattr(self.canvas.manager, "num", 1)
-        vsdir = find_vscode_dir(Path.cwd())
+        vsdir = out_dir(find_vscode_dir(Path.cwd()))
         if vsdir is None:
             self.set_message("保存先を決める VS Code 拡張が見つかりません")
             return

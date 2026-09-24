@@ -9,6 +9,19 @@
  *  - Python 側が書く .vscode/py_figures.json を監視して figure ごとにタブを開く
  *  - Figure タブの 📋 で、その figure の PNG を Windows のクリップボードへ入れる
  *  - Python 側が書く .vscode/py_workspace.json を監視してワークスペースビューに変数を出す
+ *
+ * 複数セッション:
+ *  - セッションごとに専用ターミナル（PyBP, PyBP 2, …）と通知ディレクトリ
+ *    .vscode/py_sessions/<番号>/ を持つ。赤丸 JSON だけは .vscode/ 直下を共有する
+ *  - F5 / セル実行は「アクティブなセッション」へ送る。そこがコード実行中なら、
+ *    空いている別セッション、それも無ければ新しいセッションで実行する
+ *  - ターミナルを切り替えると、そのセッションがアクティブになる（ワークスペースビューも追従）
+ *
+ * エラー時の停止:
+ *  - F5 / セル実行はエラーで止まらない（トレースバックだけ出す）。Python がエラーを
+ *    py_session.json で知らせてくるので、ステータスバーに ⚠ を出し、押すと %pybp_pm で
+ *    その行に入る（PyBP: Debug Last Error）
+ *  - Alt+F5（PyBP: Run (Stop on Error)）は、その場でエラーの行に止まる（--pm）
  */
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -23,6 +36,7 @@ const STATE_NAME = "py_debug_state.json";
 const SESSION_NAME = "py_session.json";
 const FIGURES_NAME = "py_figures.json";
 const SAVE_REQUEST_NAME = "py_save_request.json";   // Python → 拡張 : 保存ダイアログ要求
+const SESSIONS_DIR = "py_sessions";                 // .vscode/py_sessions/<番号>/ にセッション別の通知
 
 // pybp 本体は同梱するが、これらは利用者の Python に入っている必要がある
 const REQUIRED_MODULES = [
@@ -157,10 +171,39 @@ function cellAt(doc: vscode.TextDocument, line: number): { start: number; end: n
 
 export function activate(context: vscode.ExtensionContext) {
   // ---- 状態 ----
-  let runTerminal: vscode.Terminal | undefined;
-  let current: { file: string; line: number } | undefined;
-  const figurePanels = new Map<number, vscode.WebviewPanel>();   // figure 番号 → タブ
-  let activeFigure: number | undefined;                          // 最後にフォーカスされた figure
+  type Stop = { file: string; line: number };
+  interface Session {
+    id: number;                                    // 1, 2, 3, …（空いている最小の番号）
+    name: string;                                  // ターミナル名 "PyBP" / "PyBP 2"
+    dir: string;                                   // .vscode/py_sessions/<id>
+    terminal: vscode.Terminal;
+    stopped?: Stop;                                // ブレークポイントで停止中の位置
+    figures: Map<number, vscode.WebviewPanel>;     // figure 番号 → タブ
+    ws: WsData | null;                             // 最後に受け取った変数一覧
+    error?: ErrInfo;                               // 直前の実行のエラー（次の実行で消える）
+    lastUsed: number;
+  }
+  type ErrInfo = { type: string; where: string | null };
+  const sessions = new Map<number, Session>();
+  let activeId: number | undefined;
+  let activeFigure: { sid: number; num: number } | undefined;   // 最後にフォーカスされた figure
+
+  const active = (): Session | undefined =>
+    activeId === undefined ? undefined : sessions.get(activeId);
+  const byTerminal = (t: vscode.Terminal | undefined) =>
+    t ? [...sessions.values()].find(s => s.terminal === t) : undefined;
+  /** 通知ファイルの URI から、それを書いたセッションを引く */
+  const byUri = (uri: vscode.Uri) => {
+    const dir = path.dirname(uri.fsPath).toLowerCase();
+    return [...sessions.values()].find(s => s.dir.toLowerCase() === dir);
+  };
+  /** 直前のエラーに入れるセッション。アクティブなものを優先し、無ければ直近に使ったもの */
+  const errorSession = (): Session | undefined => {
+    const a = active();
+    if (a?.error) { return a; }
+    return [...sessions.values()].filter(s => s.error)
+      .sort((x, y) => y.lastUsed - x.lastUsed)[0];
+  };
 
   // ---- ワークスペースビュー ----
   const workspaceView = new WorkspaceViewProvider();
@@ -207,22 +250,39 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- ステータスバー ----
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  status.command = "pybp.continue";
-  context.subscriptions.push(status);
+  // 直前の実行がエラーで終わったセッションがあれば、そこへ入るボタンを出す
+  const errStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  errStatus.command = "pybp.debugLastError";
+  errStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+  context.subscriptions.push(status, errStatus);
 
   const updateStatus = () => {
-    if (current) {
-      status.text = `$(debug-pause) PyBP: ${path.basename(current.file)}:${current.line}`;
+    const a = active();
+    const n = sessions.size;
+    if (a?.stopped) {
+      status.text = `$(debug-pause) ${a.name}: ${path.basename(a.stopped.file)}:${a.stopped.line}`;
       status.tooltip = "ブレークポイントで停止中（クリックで続行）";
       status.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      status.command = "pybp.continue";
       status.show();
-    } else if (runTerminal) {
-      status.text = "$(terminal) PyBP session";
-      status.tooltip = "IPython セッション稼働中";
+    } else if (a) {
+      status.text = n > 1 ? `$(terminal) ${a.name}（${n} セッション）` : "$(terminal) PyBP session";
+      status.tooltip = "IPython セッション稼働中（クリックでセッションを切り替え）";
       status.backgroundColor = undefined;
+      status.command = "pybp.selectSession";
       status.show();
     } else {
       status.hide();
+    }
+    const e = errorSession();
+    if (e && !e.stopped) {
+      const where = e.error!.where ? ` (${e.error!.where})` : "";
+      errStatus.text = `$(warning) ${e.error!.type}${where}`;
+      errStatus.tooltip = `${sessions.size > 1 ? e.name + ": " : ""}`
+        + "エラーで終了しました。クリックでエラーの行に入ります（PyBP: Debug Last Error）";
+      errStatus.show();
+    } else {
+      errStatus.hide();
     }
   };
 
@@ -235,23 +295,31 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(decoration);
 
+  // 停止中のセッションが複数あれば、その全部の停止行をハイライトする
   const applyHighlight = () => {
+    const stops = [...sessions.values()].map(s => s.stopped).filter((x): x is Stop => !!x);
     for (const ed of vscode.window.visibleTextEditors) {
-      const hit = !!current &&
-        ed.document.uri.fsPath.toLowerCase() === current.file.toLowerCase();
-      ed.setDecorations(
-        decoration,
-        hit ? [new vscode.Range(current!.line - 1, 0, current!.line - 1, 0)] : []
-      );
+      const f = ed.document.uri.fsPath.toLowerCase();
+      ed.setDecorations(decoration, stops
+        .filter(st => st.file.toLowerCase() === f)
+        .map(st => new vscode.Range(st.line - 1, 0, st.line - 1, 0)));
     }
   };
 
-  // 停止解除・セッション終了などで共通に呼ぶ
-  const clearStopped = () => {
-    current = undefined;
-    setStopped(false);
+  /** アクティブセッションが変わった・状態が変わったときに、表示をまとめて揃える */
+  const refresh = () => {
+    const a = active();
+    setStopped(!!a?.stopped);
+    workspaceView.update(a?.ws ?? null, a && sessions.size > 1 ? a.name : undefined);
     applyHighlight();
     updateStatus();
+  };
+
+  const setActive = (s: Session) => {
+    s.lastUsed = Date.now();
+    if (activeId === s.id) { return; }
+    activeId = s.id;
+    refresh();
   };
 
   // ---- セルの見た目 ----
@@ -285,26 +353,105 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   // ---- figure タブ ----
-  const closeAllFigurePanels = () => {
-    for (const p of [...figurePanels.values()]) { p.dispose(); }
-    figurePanels.clear();
+  const closeFigurePanels = (s: Session) => {
+    for (const p of [...s.figures.values()]) { p.dispose(); }
+    s.figures.clear();
   };
+  const allFigurePanels = () =>
+    [...sessions.values()].flatMap(s => [...s.figures].map(([num, p]) => ({ s, num, p })));
 
   // Figure タブが前面にあるかを自前のコンテキストキーで持つ。
   // 組み込みの activeWebviewPanelId は当環境で editor/title に効かなかったため
   // （pybp.stopped と同じ、この拡張で実績のある方式に揃える）。
   const updateFigureContext = () => {
-    const active = [...figurePanels.values()].some(p => p.active);
-    vscode.commands.executeCommand("setContext", "pybp.figureActive", active);
+    const anyActive = allFigurePanels().some(f => f.p.active);
+    vscode.commands.executeCommand("setContext", "pybp.figureActive", anyActive);
   };
 
-  const openFigurePanel = (base: string, num: number) => {
-    const existing = figurePanels.get(num);
+  // ---- エディタグループの使い分け ----
+  // 「コードのグループ」と「Figure のグループ」を分けて扱う。
+  //  - 停止行（赤丸・エラー）はコードのグループに出す。Figure 側に同じスクリプトを開かない
+  //  - Figure タブは、既に Figure があるグループにまとめて開く
+  //  - Figure を開いたせいでアクティブなグループが Figure 側へ移ったら、コード側へ戻す
+  const isFigureTab = (t: vscode.Tab) =>
+    t.input instanceof vscode.TabInputWebview && t.input.viewType.includes("pybpFigure");
+  const figureGroups = () =>
+    vscode.window.tabGroups.all.filter(g => g.tabs.some(isFigureTab));
+  const isFigureColumn = (col: vscode.ViewColumn | undefined) =>
+    col !== undefined && figureGroups().some(g => g.viewColumn === col);
+
+  // 最後に使ったコードのエディタ（Figure のグループにあるものは除く）
+  let lastCode: { uri: vscode.Uri; column: vscode.ViewColumn } | undefined;
+  const trackCodeEditor = (ed: vscode.TextEditor | undefined) => {
+    if (!ed || ed.document.uri.scheme !== "file" || ed.viewColumn === undefined) { return; }
+    if (isFigureColumn(ed.viewColumn)) { return; }
+    lastCode = { uri: ed.document.uri, column: ed.viewColumn };
+  };
+  trackCodeEditor(vscode.window.activeTextEditor);
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(trackCodeEditor));
+
+  /** 停止行を出すグループ: 最後に使ったコードのグループ → Figure の無いグループ → 1 列目 */
+  const codeColumn = (): vscode.ViewColumn => {
+    const groups = vscode.window.tabGroups.all;
+    if (lastCode && groups.some(g => g.viewColumn === lastCode!.column)
+      && !isFigureColumn(lastCode.column)) {
+      return lastCode.column;
+    }
+    return groups.find(g => !g.tabs.some(isFigureTab))?.viewColumn ?? vscode.ViewColumn.One;
+  };
+
+  /**
+   * 停止行（赤丸・エラー）を見せる。そのファイルがコード側で既に見えていれば、
+   * タブは開かずにスクロールするだけ。見えていなければコードのグループに開く
+   */
+  const revealStop = async (stop: Stop) => {
+    const range = new vscode.Range(stop.line - 1, 0, stop.line - 1, 0);
+    const f = stop.file.toLowerCase();
+    const visible = vscode.window.visibleTextEditors.find(e =>
+      e.document.uri.fsPath.toLowerCase() === f && !isFigureColumn(e.viewColumn));
+    if (visible) {
+      visible.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(stop.file));
+    const ed = await vscode.window.showTextDocument(doc, {
+      viewColumn: codeColumn(), preserveFocus: true, preview: false,
+    });
+    ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  };
+
+  /** Figure タブを開くグループ: 既に Figure があればそこ、無ければコードの隣 */
+  const figureColumn = (): vscode.ViewColumn =>
+    figureGroups()[0]?.viewColumn ?? vscode.ViewColumn.Beside;
+
+  // Figure を開いた・前に出した直後に Figure 側がアクティブになったら、それは
+  // 利用者のクリックではなく自動で移ったもの。コードのエディタへ戻す
+  const AUTO_ACTIVATE_MS = 800;
+  let figureAutoUntil = 0;
+  const markFigureOpened = () => { figureAutoUntil = Date.now() + AUTO_ACTIVATE_MS; };
+  const restoreCodeGroup = (panel: vscode.WebviewPanel) => {
+    if (Date.now() > figureAutoUntil || !lastCode) { return; }
+    const code = lastCode;
+    if (panel.viewColumn === code.column) { return; }
+    const tabOpen = vscode.window.tabGroups.all.some(g => g.viewColumn === code.column
+      && g.tabs.some(t => t.input instanceof vscode.TabInputText
+        && t.input.uri.toString() === code.uri.toString()));
+    if (!tabOpen) { return; }   // 閉じたファイルを開き直してまで戻さない
+    figureAutoUntil = 0;
+    void vscode.window.showTextDocument(code.uri, {
+      viewColumn: code.column, preserveFocus: false, preview: false,
+    });
+  };
+
+  const openFigurePanel = (s: Session, base: string, num: number) => {
+    markFigureOpened();
+    const existing = s.figures.get(num);
     if (existing) { existing.reveal(undefined, true); return; }
 
+    // 2 つ目以降のセッションの図は、どのセッションのものか分かるよう名前を添える
     const panel = vscode.window.createWebviewPanel(
-      "pybpFigure", `Figure ${num}`,
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      "pybpFigure", s.id === 1 ? `Figure ${num}` : `Figure ${num} (${s.name})`,
+      { viewColumn: figureColumn(), preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true }
     );
     const figureHtml = () => `<!DOCTYPE html><html><head>
@@ -321,33 +468,41 @@ export function activate(context: vscode.ExtensionContext) {
     // 背面タブが空白になる問題は Python 側（pybp.webagg）で対処している。
     // ブラウザは canvas のリサイズで中身を捨てるため、resize には必ずフル画像を返す。
     panel.onDidChangeViewState(e => {
-      if (e.webviewPanel.active) { activeFigure = num; }
+      if (e.webviewPanel.active) {
+        activeFigure = { sid: s.id, num };
+        restoreCodeGroup(e.webviewPanel);
+      }
       updateFigureContext();
     });
     panel.onDidDispose(() => {
-      figurePanels.delete(num);
-      if (activeFigure === num) { activeFigure = undefined; }
+      if (s.figures.get(num) === panel) { s.figures.delete(num); }
+      if (activeFigure?.sid === s.id && activeFigure.num === num) { activeFigure = undefined; }
       updateFigureContext();
     });
-    figurePanels.set(num, panel);
+    s.figures.set(num, panel);
   };
 
-  const readFigures = (): { url: string; figures: number[] } | undefined => {
-    const dir = vscodeDir();
-    if (!dir) { return undefined; }
+  const readFigures = (s: Session | undefined): { url: string; figures: number[] } | undefined => {
+    if (!s) { return undefined; }
     try {
-      return JSON.parse(fs.readFileSync(path.join(dir, FIGURES_NAME), "utf8"));
+      return JSON.parse(fs.readFileSync(path.join(s.dir, FIGURES_NAME), "utf8"));
     } catch {
       return undefined;
     }
   };
 
+  /** セッションが webagg に使うポート（埋まっていれば Python 側が別のポートにずらす） */
+  const portOf = (s: Session | undefined) =>
+    config().get<number>("webaggPort", 8988) + ((s?.id ?? 1) - 1);
+  const figureBase = (s: Session | undefined) =>
+    readFigures(s)?.url ?? `http://127.0.0.1:${portOf(s)}`;
+
   // ---- 保存ダイアログ（ツールバーの Download を押すと Python が要求ファイルを書く） ----
   // webview は window.open もダウンロードもブロックするため、保存は拡張側で行う。
-  const handleSaveRequest = async () => {
-    const dir = vscodeDir();
-    if (!dir) { return; }
-    const reqPath = path.join(dir, SAVE_REQUEST_NAME);
+  const handleSaveRequest = async (reqUri: vscode.Uri) => {
+    const s = byUri(reqUri);
+    if (!s) { return; }
+    const reqPath = reqUri.fsPath;
     let req: { figure: number; format: string };
     try {
       req = JSON.parse(fs.readFileSync(reqPath, "utf8"));
@@ -363,8 +518,7 @@ export function activate(context: vscode.ExtensionContext) {
       filters: { [fmt.toUpperCase()]: [fmt] },
     });
     if (!uri) { return; }
-    const port = config().get<number>("webaggPort", 8988);
-    const base = readFigures()?.url ?? `http://127.0.0.1:${port}`;
+    const base = figureBase(s);
     try {
       const data = await fetchUrl(`${base}/${req.figure}/download.${fmt}`);
       fs.writeFileSync(uri.fsPath, data);
@@ -377,17 +531,37 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  const syncFigurePanels = (info: { url: string; figures: number[] }) => {
-    for (const n of info.figures) { openFigurePanel(info.url, n); }
-    for (const [n, p] of [...figurePanels]) {      // plt.close された figure のタブは閉じる
+  const syncFigurePanels = (s: Session, info: { url: string; figures: number[] }) => {
+    for (const n of info.figures) { openFigurePanel(s, info.url, n); }
+    for (const [n, p] of [...s.figures]) {         // plt.close された figure のタブは閉じる
       if (!info.figures.includes(n)) { p.dispose(); }
     }
   };
 
   // ---- セッション ----
-  const sessionAlive = () => {
-    const dir = vscodeDir();
-    return !!runTerminal && !!dir && fs.existsSync(path.join(dir, SESSION_NAME));
+  const readSession = (s: Session):
+    { pid: number; busy?: boolean; error?: ErrInfo | null } | undefined => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(s.dir, SESSION_NAME), "utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+  /** Python のプロセスが生きているか（落ちてもターミナルは残るので exitStatus で見る） */
+  const isAlive = (s: Session) => s.terminal.exitStatus === undefined;
+  /**
+   * コードを実行中か（ブレークポイントで停止中も Python から見れば実行中）。
+   * 起動直後で py_session.json がまだ無いときも実行中とみなす
+   * （起動と同時にスクリプトを流すので、そこへ重ねて送らない）
+   */
+  const isBusy = (s: Session) => readSession(s)?.busy ?? true;
+  /** F5 / セル実行を受け付けられるか。停止中のセッションへ %pybp を送ると pdb に入ってしまう */
+  const canTake = (s: Session) => isAlive(s) && !s.stopped && !isBusy(s);
+
+  const nextId = () => {
+    let id = 1;
+    while (sessions.has(id)) { id++; }
+    return id;
   };
 
   // セッションに渡す環境変数。
@@ -396,9 +570,11 @@ export function activate(context: vscode.ExtensionContext) {
   //  PYBP_MPL   : matplotlib バックエンド。pybp.figureDisplay から決まる。
   //               "auto" は Python 側が Qt → Tk → webagg の順に解決する
   //  PYTHONPATH : 同梱した pybp を pip install 無しで import できるようにする
-  const sessionEnv = (): { [k: string]: string } => {
+  //  PYBP_SESSION_DIR : このセッションの通知ファイルの置き場所（セッションごとに別）
+  const sessionEnv = (id = 1, dir?: string): { [k: string]: string } => {
     const env: { [k: string]: string } = {
-      PYBP_PORT: String(config().get<number>("webaggPort", 8988)),
+      PYBP_PORT: String(config().get<number>("webaggPort", 8988) + id - 1),
+      ...(dir ? { PYBP_SESSION_DIR: dir } : {}),
       PYBP_MPL: {
         tab: "webagg",
         manual: "webagg",
@@ -489,16 +665,58 @@ export function activate(context: vscode.ExtensionContext) {
           });
       }));
 
-  // cell を渡すと、起動直後にスクリプト全体ではなくその行範囲だけを実行する
+  /** セッションを片付ける（ターミナルが閉じられた・再起動する） */
+  const endSession = (s: Session) => {
+    if (sessions.get(s.id) !== s) { return; }
+    sessions.delete(s.id);
+    closeFigurePanels(s);
+    try { fs.rmSync(s.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (activeId === s.id) {
+      // 直近に使っていた別のセッションをアクティブにする
+      const next = [...sessions.values()].sort((a, b) => b.lastUsed - a.lastUsed)[0];
+      activeId = next?.id;
+    }
+    refresh();
+  };
+
+  // cell を渡すと、起動直後にスクリプト全体ではなくその行範囲だけを実行する。
+  // id を渡すとその番号で作る（再起動で同じ番号・同じターミナル名を引き継ぐ）
+  // 起動は同時に 1 つまで。probe に 1〜2 秒かかるので、その間の F5 連打で
+  // セッションが押した回数だけ増えないようにする
+  let starting = false;
   const startSession = async (
-    scriptPath?: string, cell?: { start: number; end: number }) => {
+    scriptPath?: string, cell?: { start: number; end: number }, id?: number, pm = false) => {
+    if (starting) {
+      vscode.window.setStatusBarMessage("PyBP: セッションを起動中です", 3000);
+      return;
+    }
+    starting = true;
+    try {
+      await launchSession(scriptPath, cell, id, pm);
+    } finally {
+      starting = false;
+    }
+  };
+
+  const launchSession = async (
+    scriptPath?: string, cell?: { start: number; end: number }, id?: number, pm = false) => {
+    // ほかのセッションが動いていればそのログは残す
     const lp = extLogPath();
-    if (lp) { try { fs.writeFileSync(lp, ""); } catch { /* ignore */ } }
+    if (lp && sessions.size === 0) { try { fs.writeFileSync(lp, ""); } catch { /* ignore */ } }
     extLog("SESSION start");
 
+    const vsdir = vscodeDir();
+    if (!vsdir) {
+      vscode.window.showWarningMessage("PyBP: フォルダを開いてから実行してください");
+      return;
+    }
+    // 再起動で引き継ぐ番号が、片付けから起動までの間に使われていたら空いている番号へ
+    const sid = id !== undefined && !sessions.has(id) ? id : nextId();
+    const sdir = path.join(vsdir, SESSIONS_DIR, String(sid));
     const python = config().get<string>("pythonPath", "python");
     const bundled = config().get<boolean>("useBundledPython", true);
-    const env = sessionEnv();
+    const env = sessionEnv(sid, sdir);
+    extLog(`SESSION #${sid} dir=${sdir}`);
     extLog(`SESSION pythonPath=${python} useBundledPython=${bundled}`);
     extLog(`SESSION figureDisplay=${figureDisplay()} PYBP_MPL=${env.PYBP_MPL}`);
     extLog(`SESSION PYTHONPATH=${env.PYTHONPATH ?? "(未設定)"}`);
@@ -537,18 +755,12 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    // 前セッションの残骸（強制終了時など）を掃除
-    const dir = vscodeDir();
-    if (dir) {
-      removeQuiet(path.join(dir, SESSION_NAME));
-      removeQuiet(path.join(dir, STATE_NAME));
-      removeQuiet(path.join(dir, FIGURES_NAME));
-      removeQuiet(path.join(dir, SAVE_REQUEST_NAME));
-      removeQuiet(path.join(dir, WORKSPACE_NAME));
+    // 前セッションの残骸（強制終了時など）を掃除。.vscode/ 直下は単一セッション時代の置き場所
+    for (const n of [SESSION_NAME, STATE_NAME, FIGURES_NAME, SAVE_REQUEST_NAME, WORKSPACE_NAME]) {
+      removeQuiet(path.join(vsdir, n));
     }
-    workspaceView.update(null);
-    closeAllFigurePanels();
-    if (runTerminal) { runTerminal.dispose(); }
+    try { fs.rmSync(sdir, { recursive: true, force: true }); } catch { /* ignore */ }
+    fs.mkdirSync(sdir, { recursive: true });
 
     // シェルを挟まず Python 自身をターミナルのプロセスにする。
     //  - 診断した処理系（probe.exe）と実際に動く処理系が必ず一致する
@@ -560,13 +772,62 @@ export function activate(context: vscode.ExtensionContext) {
       "-m", "pybp",
       ...(scriptPath ? [scriptPath] : []),
       ...(scriptPath && cell ? ["--cell", String(cell.start), String(cell.end)] : []),
+      ...(scriptPath && pm ? ["--pm"] : []),
     ];
     extLog(`SESSION launch ${probe.exe} ${args.join(" ")}`);
-    runTerminal = vscode.window.createTerminal({
-      name: "PyBP", shellPath: probe.exe, shellArgs: args, env,
+    // isTransient: VS Code のターミナル永続化（terminal.integrated.enablePersistentSessions）
+    // の対象から外す。外さないと、ウィンドウを閉じて開き直したときに VS Code が
+    // 同じ shellPath / shellArgs でターミナルを復元し、前回のスクリプトが勝手に走る。
+    const name = sid === 1 ? "PyBP" : `PyBP ${sid}`;
+    const terminal = vscode.window.createTerminal({
+      name, shellPath: probe.exe, shellArgs: args, env, isTransient: true,
     });
-    runTerminal.show(true);
+    const s: Session = {
+      id: sid, name, dir: sdir, terminal, figures: new Map(), ws: null, lastUsed: Date.now(),
+    };
+    sessions.set(sid, s);
+    activeId = sid;
+    terminal.show(true);
+    refresh();
+  };
+
+  /**
+   * スクリプト / 行範囲を実行するセッションを選ぶ。
+   *  1. アクティブなセッションが空いていればそこ
+   *  2. 実行中なら、空いている別のセッション（直近に使ったもの）
+   *  3. どれも実行中なら undefined（= 新しいセッションを起動する）
+   */
+  const pickSession = (): Session | undefined => {
+    const a = active();
+    if (a && canTake(a)) { return a; }
+    return [...sessions.values()].filter(canTake).sort((x, y) => y.lastUsed - x.lastUsed)[0];
+  };
+
+  /**
+   * 選んだセッションへ送る。forceNew なら必ず新しいセッションで実行する。
+   * pm（Alt+F5）ならエラーの行で止まる。F5 / セル実行は止まらない
+   */
+  const dispatch = async (
+    scriptPath: string, cell?: { start: number; end: number }, forceNew = false, pm = false) => {
+    const a = active();
+    const target = forceNew ? undefined : pickSession();
+    if (!forceNew && a && target !== a && isAlive(a)) {
+      vscode.window.setStatusBarMessage(
+        `PyBP: ${a.name} は${a.stopped ? "停止中" : "実行中"}のため`
+        + ` ${target?.name ?? "新しいセッション"} で実行します`, 4000);
+    }
+    if (!target) {
+      await startSession(scriptPath, cell, undefined, pm);
+      return;
+    }
+    setActive(target);
+    target.error = undefined;   // 実行を始めた時点で前のエラーには入れなくなる
     updateStatus();
+    target.terminal.show(true);
+    const opt = pm ? "--pm " : "";
+    target.terminal.sendText(cell
+      ? `%pybp_cell ${opt}"${scriptPath}" ${cell.start} ${cell.end}`
+      : `%pybp ${opt}"${scriptPath}"`);
   };
 
   // ---- 赤丸 ----
@@ -576,6 +837,7 @@ export function activate(context: vscode.ExtensionContext) {
   // ---- セル / 選択範囲の実行 ----
   const pythonEditor = (): vscode.TextEditor | undefined => {
     const ed = vscode.window.activeTextEditor;
+    trackCodeEditor(ed);
     if (!ed || ed.document.languageId !== "python") {
       vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
       return undefined;
@@ -590,12 +852,7 @@ export function activate(context: vscode.ExtensionContext) {
    */
   const runRange = async (doc: vscode.TextDocument, start: number, end: number) => {
     await doc.save();
-    if (sessionAlive()) {
-      runTerminal!.show(true);
-      runTerminal!.sendText(`%pybp_cell "${doc.uri.fsPath}" ${start} ${end}`);
-    } else {
-      await startSession(doc.uri.fsPath, { start, end });   // 起動と同時にその範囲を実行
-    }
+    await dispatch(doc.uri.fsPath, { start, end });   // 新規セッションなら起動と同時にその範囲を実行
   };
 
   /** カーソルを移し、そこが見えるようにスクロールする */
@@ -712,19 +969,57 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   // ---- コマンド: 実行系 ----
+  const runFile = (forceNew: boolean, pm = false) => async () => {
+    trackCodeEditor(vscode.window.activeTextEditor);
+    const doc = vscode.window.activeTextEditor?.document;
+    if (!doc || doc.languageId !== "python") {
+      vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
+      return;
+    }
+    await doc.save();
+    await dispatch(doc.uri.fsPath, undefined, forceNew, pm);
+  };
+
   context.subscriptions.push(
-    vscode.commands.registerCommand("pybp.run", async () => {
-      const doc = vscode.window.activeTextEditor?.document;
-      if (!doc || doc.languageId !== "python") {
-        vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
+    vscode.commands.registerCommand("pybp.run", runFile(false)),
+    vscode.commands.registerCommand("pybp.runInNewSession", runFile(true)),
+    vscode.commands.registerCommand("pybp.runStopOnError", runFile(false, true)),
+
+    // 直前の実行のエラーの行に入る（F5 / セル実行はエラーで止まらないので、後から入る）
+    vscode.commands.registerCommand("pybp.debugLastError", () => {
+      const s = errorSession();
+      if (!s) {
+        vscode.window.showInformationMessage(
+          "PyBP: 直前のエラーはありません（次の実行を始めると消えます）");
         return;
       }
-      await doc.save();
-      if (sessionAlive()) {
-        runTerminal!.show(true);
-        runTerminal!.sendText(`%pybp "${doc.uri.fsPath}"`);   // 既存セッションで再実行
-      } else {
-        await startSession(doc.uri.fsPath);                    // 新規セッション
+      if (s.stopped || isBusy(s)) {
+        vscode.window.showWarningMessage(`PyBP: ${s.name} は実行中のため入れません`);
+        return;
+      }
+      setActive(s);
+      s.terminal.show(true);
+      s.terminal.sendText("%pybp_pm");
+    }),
+
+    vscode.commands.registerCommand("pybp.selectSession", async () => {
+      if (sessions.size === 0) {
+        vscode.window.showInformationMessage("PyBP: 稼働中のセッションはありません");
+        return;
+      }
+      const items = [...sessions.values()].sort((a, b) => a.id - b.id).map(s => ({
+        label: `${s.id === activeId ? "$(check) " : ""}${s.name}`,
+        description: s.stopped
+          ? `⏸ ${path.basename(s.stopped.file)}:${s.stopped.line}`
+          : isBusy(s) ? "実行中" : "待機中",
+        s,
+      }));
+      const pick = await vscode.window.showQuickPick(items, {
+        placeHolder: "F5 / セル実行の送り先にするセッション",
+      });
+      if (pick) {
+        setActive(pick.s);
+        pick.s.terminal.show(true);
       }
     }),
 
@@ -733,13 +1028,19 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("pybp.runSelection", runSelectionOrLine),
     vscode.commands.registerCommand("pybp.useCellKeys", installCellKeybindings),
 
+    // アクティブなセッションだけを作り直す（ほかのセッションの計算は止めない）
     vscode.commands.registerCommand("pybp.restart", async () => {
-      const doc = vscode.window.activeTextEditor?.document;
-      if (runTerminal) {
-        runTerminal.dispose();
-        runTerminal = undefined;
+      if (starting) {   // 片付けだけして起動されない、を避ける
+        vscode.window.setStatusBarMessage("PyBP: セッションを起動中です", 3000);
+        return;
       }
-      await startSession(doc?.languageId === "python" ? doc.uri.fsPath : undefined);
+      const doc = vscode.window.activeTextEditor?.document;
+      const s = active();
+      if (s) {
+        endSession(s);
+        s.terminal.dispose();
+      }
+      await startSession(doc?.languageId === "python" ? doc.uri.fsPath : undefined, undefined, s?.id);
     }),
 
     vscode.commands.registerCommand("pybp.openFigures", async () => {
@@ -750,16 +1051,16 @@ export function activate(context: vscode.ExtensionContext) {
             : "PyBP: 設定 pybp.figureDisplay が none のため、図は表示されません");
         return;
       }
-      const info = readFigures();
-      if (info && info.figures.length > 0) {
-        syncFigurePanels(info);
+      const s = active();
+      const info = readFigures(s);
+      if (s && info && info.figures.length > 0) {
+        syncFigurePanels(s, info);
         return;
       }
       // figure 情報が無い → webagg の一覧ページを Simple Browser で開く
-      const port = config().get<number>("webaggPort", 8988);
       return vscode.commands.executeCommand(
         "simpleBrowser.api.open",
-        vscode.Uri.parse(info?.url ?? `http://127.0.0.1:${port}`),
+        vscode.Uri.parse(figureBase(s)),
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true }
       );
     }),
@@ -770,14 +1071,14 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       // アイコンを押した時点でフォーカスされているタブを優先し、無ければ直近のものを使う
-      const focused = [...figurePanels].find(([, p]) => p.active)?.[0];
-      const num = focused ?? activeFigure;
-      if (num === undefined) {
+      const focused = allFigurePanels().find(f => f.p.active);
+      const fig = focused ? { sid: focused.s.id, num: focused.num } : activeFigure;
+      if (fig === undefined) {
         vscode.window.showWarningMessage("PyBP: コピーする Figure タブがありません");
         return;
       }
-      const port = config().get<number>("webaggPort", 8988);
-      const base = readFigures()?.url ?? `http://127.0.0.1:${port}`;
+      const num = fig.num;
+      const base = figureBase(sessions.get(fig.sid));
       const tmp = path.join(os.tmpdir(), `pybp-fig${num}-${Date.now()}.png`);
       try {
         const png = await fetchUrl(`${base}/${num}/download.png`);
@@ -795,9 +1096,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // ---- コマンド: 停止中の pdb 操作 ----
+  // 送り先はアクティブなセッション。そこが停止していなければ、停止中の別のセッション
   const send = (cmd: string) => () => {
-    const term = runTerminal ?? vscode.window.activeTerminal;
-    term?.sendText(cmd);
+    const a = active();
+    const s = a?.stopped ? a : [...sessions.values()].find(x => x.stopped) ?? a;
+    (s?.terminal ?? vscode.window.activeTerminal)?.sendText(cmd);
   };
   context.subscriptions.push(
     vscode.commands.registerCommand("pybp.continue", send("c")),
@@ -806,51 +1109,71 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("pybp.stepOut",  send("r")),
     vscode.commands.registerCommand("pybp.stop",     send("q")),
     vscode.window.onDidCloseTerminal(t => {
-      if (t === runTerminal) {
-        runTerminal = undefined;
-        closeAllFigurePanels();
-        clearStopped();
-        workspaceView.update(null);
-      }
+      const s = byTerminal(t);
+      if (s) { endSession(s); }
+    }),
+    // PyBP のターミナルを前に出したら、そのセッションを F5 の送り先にする
+    vscode.window.onDidChangeActiveTerminal(t => {
+      const s = byTerminal(t);
+      if (s) { setActive(s); }
     }),
   );
 
   // ---- 停止位置の監視 ----
+  // 止まったセッションをアクティブにする（F10 などがそのセッションへ届くように）
   const onStateChanged = async (uri: vscode.Uri) => {
+    const s = byUri(uri);
+    if (!s) { return; }
     try {
       const raw = await vscode.workspace.fs.readFile(uri);
-      current = JSON.parse(Buffer.from(raw).toString("utf8"));
-      setStopped(true);
-      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(current!.file));
-      const ed = await vscode.window.showTextDocument(doc, { preserveFocus: true, preview: false });
-      ed.revealRange(
-        new vscode.Range(current!.line - 1, 0, current!.line - 1, 0),
-        vscode.TextEditorRevealType.InCenterIfOutsideViewport
-      );
+      const stop: Stop = JSON.parse(Buffer.from(raw).toString("utf8"));
+      s.stopped = stop;
+      activeId = s.id;
+      s.lastUsed = Date.now();
+      refresh();
+      await revealStop(stop);
     } catch {
-      current = undefined;
-      setStopped(false);
+      s.stopped = undefined;
+      refresh();
     }
-    applyHighlight();
-    updateStatus();
+  };
+  const onStateCleared = (uri: vscode.Uri) => {
+    const s = byUri(uri);
+    if (s) { s.stopped = undefined; refresh(); }
   };
 
-  const stateWatcher = vscode.workspace.createFileSystemWatcher(`**/.vscode/${STATE_NAME}`);
+  const sessionGlob = (name: string) => `**/.vscode/${SESSIONS_DIR}/*/${name}`;
+
+  // py_session.json（busy / error）が変わったら、エラーの ⚠ を出し直す
+  const onSessionFile = (uri: vscode.Uri) => {
+    const s = byUri(uri);
+    if (!s) { return; }
+    const info = readSession(s);
+    if (!info || info.busy) { return; }   // 実行中は前のエラーを出さない（ほぼ消えている）
+    s.error = info.error ?? undefined;
+    updateStatus();
+  };
+  const sessionWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(SESSION_NAME));
+  sessionWatcher.onDidCreate(onSessionFile);
+  sessionWatcher.onDidChange(onSessionFile);
+  context.subscriptions.push(sessionWatcher);
+  const stateWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(STATE_NAME));
   stateWatcher.onDidCreate(onStateChanged);
   stateWatcher.onDidChange(onStateChanged);
-  stateWatcher.onDidDelete(clearStopped);
+  stateWatcher.onDidDelete(onStateCleared);
   context.subscriptions.push(
     stateWatcher,
     vscode.window.onDidChangeVisibleTextEditors(applyHighlight),
   );
 
   // ---- figure タブの自動オープン ----
-  const onFigures = async () => {
+  const onFigures = async (uri: vscode.Uri) => {
     if (figureDisplay() !== "tab") { return; }
-    const info = readFigures();
-    if (info) { syncFigurePanels(info); }
+    const s = byUri(uri);
+    const info = readFigures(s);
+    if (s && info) { syncFigurePanels(s, info); }
   };
-  const figWatcher = vscode.workspace.createFileSystemWatcher(`**/.vscode/${FIGURES_NAME}`);
+  const figWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(FIGURES_NAME));
   figWatcher.onDidCreate(onFigures);
   figWatcher.onDidChange(onFigures);
   context.subscriptions.push(figWatcher);
@@ -858,21 +1181,27 @@ export function activate(context: vscode.ExtensionContext) {
   // ---- 変数一覧の監視（ワークスペースビュー） ----
   // Python は一時ファイルからの置き換えで書くので、読めた時点の内容は常に完全。
   // それでも壊れていたら（手で消した等）その回は無視して次の更新を待つ。
+  // 変数一覧はセッションごとに覚えておき、ビューにはアクティブなセッションの分だけ出す
   const onWorkspace = async (uri: vscode.Uri) => {
-    if (!runTerminal) { return; }   // このウィンドウのセッションでなければ出さない
+    const s = byUri(uri);
+    if (!s) { return; }   // このウィンドウのセッションでなければ出さない
     try {
       const raw = await vscode.workspace.fs.readFile(uri);
-      workspaceView.update(JSON.parse(Buffer.from(raw).toString("utf8")) as WsData);
+      s.ws = JSON.parse(Buffer.from(raw).toString("utf8")) as WsData;
+      if (s.id === activeId) { refresh(); }
     } catch { /* ignore */ }
   };
-  const wsWatcher = vscode.workspace.createFileSystemWatcher(`**/.vscode/${WORKSPACE_NAME}`);
+  const wsWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(WORKSPACE_NAME));
   wsWatcher.onDidCreate(onWorkspace);
   wsWatcher.onDidChange(onWorkspace);
-  wsWatcher.onDidDelete(() => workspaceView.update(null));
+  wsWatcher.onDidDelete(uri => {
+    const s = byUri(uri);
+    if (s) { s.ws = null; if (s.id === activeId) { refresh(); } }
+  });
   context.subscriptions.push(wsWatcher);
 
   // ---- 保存要求の監視 ----
-  const saveWatcher = vscode.workspace.createFileSystemWatcher(`**/.vscode/${SAVE_REQUEST_NAME}`);
+  const saveWatcher = vscode.workspace.createFileSystemWatcher(sessionGlob(SAVE_REQUEST_NAME));
   saveWatcher.onDidCreate(handleSaveRequest);
   saveWatcher.onDidChange(handleSaveRequest);
   context.subscriptions.push(saveWatcher);
@@ -908,7 +1237,7 @@ export function activate(context: vscode.ExtensionContext) {
         && !e.affectsConfiguration("pybp.windowBackend")
         && !e.affectsConfiguration("pybp.autoOpenFigures")) { return; }
       updateFigureTabsContext();
-      if (!runTerminal) { return; }
+      if (sessions.size === 0) { return; }
       const pick = await vscode.window.showInformationMessage(
         "PyBP: 図の表示先が変わりました。セッションを作り直すと反映されます",
         "再起動");

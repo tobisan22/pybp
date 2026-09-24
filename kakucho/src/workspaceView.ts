@@ -33,6 +33,7 @@ export class WorkspaceViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "pybp.workspace";
   private view?: vscode.WebviewView;
   private data: WsData | null = null;
+  private session?: string;
 
   resolveWebviewView(view: vscode.WebviewView) {
     this.view = view;
@@ -47,18 +48,20 @@ export class WorkspaceViewProvider implements vscode.WebviewViewProvider {
     this.post();
   }
 
-  /** null はセッションなし */
-  update(data: WsData | null) {
+  /** null はセッションなし。session はセッションが複数あるときの表示名（"PyBP 2" など） */
+  update(data: WsData | null, session?: string) {
     this.data = data;
+    this.session = session;
     this.post();
   }
 
   private post() {
     const v = this.view;
     if (!v) { return; }
-    v.description = this.data
+    const scope = this.data
       ? (this.data.stopped ? `⏸ ${this.data.scope}` : this.data.scope)
       : undefined;
+    v.description = [this.session, scope].filter(Boolean).join(" · ") || undefined;
     if (v.visible) { void v.webview.postMessage({ type: "data", data: this.data }); }
   }
 }
