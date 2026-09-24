@@ -4,6 +4,13 @@ All notable changes to the "pybp" extension will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [0.4.5] - 2026-09-24
+
+### Changed
+
+- ipdb を抜けるボタン（■ **PyBP: Quit Debugger (q)**）を、エディタ右上の ▷ 実行ボタンのすぐ隣に移しました。赤丸やエラーで止まっている間だけ表示され、押すと `q` を送って IPython プロンプトに戻ります（Shift+F5 と同じ）。これまでは停止中のボタン列の右端にありました。
+- それに合わせて、📈 Open Figures / 📋 Copy Figure のボタンはボタン列の右側に移しました。
+
 ## [0.4.4] - 2026-09-24
 
 ### Fixed
