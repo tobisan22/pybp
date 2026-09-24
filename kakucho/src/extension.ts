@@ -368,14 +368,90 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.executeCommand("setContext", "pybp.figureActive", anyActive);
   };
 
+  // ---- エディタグループの使い分け ----
+  // 「コードのグループ」と「Figure のグループ」を分けて扱う。
+  //  - 停止行（赤丸・エラー）はコードのグループに出す。Figure 側に同じスクリプトを開かない
+  //  - Figure タブは、既に Figure があるグループにまとめて開く
+  //  - Figure を開いたせいでアクティブなグループが Figure 側へ移ったら、コード側へ戻す
+  const isFigureTab = (t: vscode.Tab) =>
+    t.input instanceof vscode.TabInputWebview && t.input.viewType.includes("pybpFigure");
+  const figureGroups = () =>
+    vscode.window.tabGroups.all.filter(g => g.tabs.some(isFigureTab));
+  const isFigureColumn = (col: vscode.ViewColumn | undefined) =>
+    col !== undefined && figureGroups().some(g => g.viewColumn === col);
+
+  // 最後に使ったコードのエディタ（Figure のグループにあるものは除く）
+  let lastCode: { uri: vscode.Uri; column: vscode.ViewColumn } | undefined;
+  const trackCodeEditor = (ed: vscode.TextEditor | undefined) => {
+    if (!ed || ed.document.uri.scheme !== "file" || ed.viewColumn === undefined) { return; }
+    if (isFigureColumn(ed.viewColumn)) { return; }
+    lastCode = { uri: ed.document.uri, column: ed.viewColumn };
+  };
+  trackCodeEditor(vscode.window.activeTextEditor);
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(trackCodeEditor));
+
+  /** 停止行を出すグループ: 最後に使ったコードのグループ → Figure の無いグループ → 1 列目 */
+  const codeColumn = (): vscode.ViewColumn => {
+    const groups = vscode.window.tabGroups.all;
+    if (lastCode && groups.some(g => g.viewColumn === lastCode!.column)
+      && !isFigureColumn(lastCode.column)) {
+      return lastCode.column;
+    }
+    return groups.find(g => !g.tabs.some(isFigureTab))?.viewColumn ?? vscode.ViewColumn.One;
+  };
+
+  /**
+   * 停止行（赤丸・エラー）を見せる。そのファイルがコード側で既に見えていれば、
+   * タブは開かずにスクロールするだけ。見えていなければコードのグループに開く
+   */
+  const revealStop = async (stop: Stop) => {
+    const range = new vscode.Range(stop.line - 1, 0, stop.line - 1, 0);
+    const f = stop.file.toLowerCase();
+    const visible = vscode.window.visibleTextEditors.find(e =>
+      e.document.uri.fsPath.toLowerCase() === f && !isFigureColumn(e.viewColumn));
+    if (visible) {
+      visible.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(stop.file));
+    const ed = await vscode.window.showTextDocument(doc, {
+      viewColumn: codeColumn(), preserveFocus: true, preview: false,
+    });
+    ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  };
+
+  /** Figure タブを開くグループ: 既に Figure があればそこ、無ければコードの隣 */
+  const figureColumn = (): vscode.ViewColumn =>
+    figureGroups()[0]?.viewColumn ?? vscode.ViewColumn.Beside;
+
+  // Figure を開いた・前に出した直後に Figure 側がアクティブになったら、それは
+  // 利用者のクリックではなく自動で移ったもの。コードのエディタへ戻す
+  const AUTO_ACTIVATE_MS = 800;
+  let figureAutoUntil = 0;
+  const markFigureOpened = () => { figureAutoUntil = Date.now() + AUTO_ACTIVATE_MS; };
+  const restoreCodeGroup = (panel: vscode.WebviewPanel) => {
+    if (Date.now() > figureAutoUntil || !lastCode) { return; }
+    const code = lastCode;
+    if (panel.viewColumn === code.column) { return; }
+    const tabOpen = vscode.window.tabGroups.all.some(g => g.viewColumn === code.column
+      && g.tabs.some(t => t.input instanceof vscode.TabInputText
+        && t.input.uri.toString() === code.uri.toString()));
+    if (!tabOpen) { return; }   // 閉じたファイルを開き直してまで戻さない
+    figureAutoUntil = 0;
+    void vscode.window.showTextDocument(code.uri, {
+      viewColumn: code.column, preserveFocus: false, preview: false,
+    });
+  };
+
   const openFigurePanel = (s: Session, base: string, num: number) => {
+    markFigureOpened();
     const existing = s.figures.get(num);
     if (existing) { existing.reveal(undefined, true); return; }
 
     // 2 つ目以降のセッションの図は、どのセッションのものか分かるよう名前を添える
     const panel = vscode.window.createWebviewPanel(
       "pybpFigure", s.id === 1 ? `Figure ${num}` : `Figure ${num} (${s.name})`,
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { viewColumn: figureColumn(), preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true }
     );
     const figureHtml = () => `<!DOCTYPE html><html><head>
@@ -392,7 +468,10 @@ export function activate(context: vscode.ExtensionContext) {
     // 背面タブが空白になる問題は Python 側（pybp.webagg）で対処している。
     // ブラウザは canvas のリサイズで中身を捨てるため、resize には必ずフル画像を返す。
     panel.onDidChangeViewState(e => {
-      if (e.webviewPanel.active) { activeFigure = { sid: s.id, num }; }
+      if (e.webviewPanel.active) {
+        activeFigure = { sid: s.id, num };
+        restoreCodeGroup(e.webviewPanel);
+      }
       updateFigureContext();
     });
     panel.onDidDispose(() => {
@@ -758,6 +837,7 @@ export function activate(context: vscode.ExtensionContext) {
   // ---- セル / 選択範囲の実行 ----
   const pythonEditor = (): vscode.TextEditor | undefined => {
     const ed = vscode.window.activeTextEditor;
+    trackCodeEditor(ed);
     if (!ed || ed.document.languageId !== "python") {
       vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
       return undefined;
@@ -890,6 +970,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- コマンド: 実行系 ----
   const runFile = (forceNew: boolean, pm = false) => async () => {
+    trackCodeEditor(vscode.window.activeTextEditor);
     const doc = vscode.window.activeTextEditor?.document;
     if (!doc || doc.languageId !== "python") {
       vscode.window.showWarningMessage("PyBP: Python ファイルを開いてください");
@@ -1050,12 +1131,7 @@ export function activate(context: vscode.ExtensionContext) {
       activeId = s.id;
       s.lastUsed = Date.now();
       refresh();
-      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(stop.file));
-      const ed = await vscode.window.showTextDocument(doc, { preserveFocus: true, preview: false });
-      ed.revealRange(
-        new vscode.Range(stop.line - 1, 0, stop.line - 1, 0),
-        vscode.TextEditorRevealType.InCenterIfOutsideViewport
-      );
+      await revealStop(stop);
     } catch {
       s.stopped = undefined;
       refresh();

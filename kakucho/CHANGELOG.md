@@ -4,6 +4,20 @@ All notable changes to the "pybp" extension will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [0.4.4] - 2026-09-24
+
+### Fixed
+
+- 図を表示した後にエラーや赤丸で止まると、停止行のスクリプトが Figure 側のグループに開き、分割した両側が同じスクリプトになってしまう問題を修正しました。停止行は次の順で表示先を選びます。
+  1. そのスクリプトがコード側で既に見えていれば、タブを開かずにスクロールとハイライトだけ
+  2. 見えていなければ、最後にコードを編集していたグループ
+  3. それも無ければ、Figure タブの無いグループ
+- 図を表示したときに、アクティブなエディタグループが Figure 側へ移ってしまう問題を修正しました。PyBP が Figure タブを開いた直後に Figure 側がアクティブになった場合は、コードのエディタへ戻します（あとから自分で Figure タブをクリックしたときはそのまま）。
+
+### Changed
+
+- Figure タブは、既に Figure タブがあるグループにまとめて開くようにしました。新しい figure ができたときに 3 つ目の分割ができることがなくなります。
+
 ## [0.4.3] - 2026-09-24
 
 ### Changed
